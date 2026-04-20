@@ -2410,7 +2410,7 @@
         Level = 30, -- FOV value (lower = more zoomed in, default Roblox is 70)
     }
 
-    local originalFieldOfView = 70
+    local originalFieldOfView = camera.FieldOfView
     local _zoomWasActive = false
 
     local ZoomGroup = Tabs.Movement:AddRightGroupbox("Zoom")
@@ -2423,6 +2423,7 @@
             if value then
                 if not _zoomWasActive then
                     originalFieldOfView = camera.FieldOfView
+                    _zoomWasActive = true
                 end
                 camera.FieldOfView = zoomSettings.Level
             else
