@@ -666,7 +666,8 @@
         text.Visible = false
         text.Center = true
         text.Outline = true
-        text.Font = 2
+        text.OutlineColor = Color3.fromRGB(0, 0, 0)
+        text.Font = 0
         text.Size = corpseESPSettings.FontSize
         text.Color = corpseESPSettings.Color
 
@@ -802,21 +803,28 @@
     end
 
     local function getExplosiveType(instance)
-        local name = instance.Name
-        local parent = instance.Parent
-        if name == "PMN2" or (parent and parent.Name == "PMN2") then return "Mine" end
-        if name == "MON50" or (parent and parent.Name == "MON50") then return "Claymore" end
+        -- Check the instance itself and all ancestors for PMN2/MON50.
+        local current = instance
+        while current and current ~= workspace do
+            if current.Name == "PMN2" then return "Mine" end
+            if current.Name == "MON50" then return "Claymore" end
+            current = current.Parent
+        end
         return nil
     end
 
-    local function scanExplosiveFolder(folder)
-        if not folder then return end
-        for _, child in ipairs(folder:GetDescendants()) do
-            if child:IsA("BasePart") or child:IsA("Model") then
-                if getExplosiveType(child) then
-                    createExplosiveESP(child)
-                end
-            end
+    local function isExplosiveRoot(instance)
+        return instance.Name == "PMN2" or instance.Name == "MON50"
+    end
+
+    local function tryAddExplosive(instance)
+        if not (instance:IsA("BasePart") or instance:IsA("Model")) then return end
+        if isExplosiveRoot(instance) then
+            createExplosiveESP(instance)
+            return
+        end
+        if getExplosiveType(instance) then
+            createExplosiveESP(instance)
         end
     end
 
@@ -842,10 +850,13 @@
             explosiveESPObjects[inst] = nil
         end
 
-        -- Scan for new explosives periodically.
-        if _explosiveScanTick % 60 == 0 then
-            scanExplosiveFolder(workspace:FindFirstChild("PMN2"))
-            scanExplosiveFolder(workspace:FindFirstChild("MON50"))
+        -- Full workspace scan periodically for any PMN2/MON50 anywhere.
+        if _explosiveScanTick % 120 == 0 then
+            for _, desc in ipairs(workspace:GetDescendants()) do
+                if (desc:IsA("BasePart") or desc:IsA("Model")) and isExplosiveRoot(desc) then
+                    createExplosiveESP(desc)
+                end
+            end
         end
 
         -- Update visuals.
@@ -896,53 +907,21 @@
         end
     end
 
-    -- Listen for new explosives.
-    local mineFolder = workspace:FindFirstChild("PMN2")
-    local claymoreFolder = workspace:FindFirstChild("MON50")
-
-    if mineFolder then
-        pcall(function()
-            mineFolder.DescendantAdded:Connect(function(desc)
-                if desc:IsA("BasePart") or desc:IsA("Model") then
-                    createExplosiveESP(desc)
-                end
-            end)
-            mineFolder.DescendantRemoving:Connect(function(desc)
-                removeExplosiveESP(desc)
-            end)
-        end)
-        scanExplosiveFolder(mineFolder)
-    end
-
-    if claymoreFolder then
-        pcall(function()
-            claymoreFolder.DescendantAdded:Connect(function(desc)
-                if desc:IsA("BasePart") or desc:IsA("Model") then
-                    createExplosiveESP(desc)
-                end
-            end)
-            claymoreFolder.DescendantRemoving:Connect(function(desc)
-                removeExplosiveESP(desc)
-            end)
-        end)
-        scanExplosiveFolder(claymoreFolder)
-    end
-
-    -- Also watch workspace for folders appearing later.
-    workspace.ChildAdded:Connect(function(child)
-        if child.Name == "PMN2" or child.Name == "MON50" then
-            pcall(function()
-                child.DescendantAdded:Connect(function(desc)
-                    if desc:IsA("BasePart") or desc:IsA("Model") then
-                        createExplosiveESP(desc)
-                    end
-                end)
-                child.DescendantRemoving:Connect(function(desc)
-                    removeExplosiveESP(desc)
-                end)
-            end)
-            scanExplosiveFolder(child)
+    -- Initial scan: find all PMN2/MON50 anywhere in workspace.
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if (desc:IsA("BasePart") or desc:IsA("Model")) and isExplosiveRoot(desc) then
+            createExplosiveESP(desc)
         end
+    end
+
+    -- Listen globally for new instances anywhere in workspace.
+    workspace.DescendantAdded:Connect(function(desc)
+        if (desc:IsA("BasePart") or desc:IsA("Model")) and isExplosiveRoot(desc) then
+            createExplosiveESP(desc)
+        end
+    end)
+    workspace.DescendantRemoving:Connect(function(desc)
+        removeExplosiveESP(desc)
     end)
 
     runService.RenderStepped:Connect(updateExplosiveESP)
