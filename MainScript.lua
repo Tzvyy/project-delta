@@ -385,7 +385,7 @@
     }
     local containerTypeEnabled = {}
     for _, name in ipairs(containerTypes) do
-        containerTypeEnabled[name] = true
+        containerTypeEnabled[name] = false
     end
 
     local containerESPObjects = {} -- [Instance] = { text = Drawing }
@@ -1305,7 +1305,7 @@
     for _, ct in ipairs(containerTypeNames) do
         ContainerGroup:AddToggle(ct.id, {
             Text = ct.name,
-            Default = true,
+            Default = false,
             Callback = function(value)
                 containerTypeEnabled[ct.name] = value
             end,
@@ -1802,22 +1802,7 @@
     snapline.Thickness = 1.5
     snapline.Transparency = 1
 
-    local SnapGroup = Tabs.Visuals:AddRightGroupbox("Snaplines")
-
-    SnapGroup:AddToggle("SnaplineEnabled", {
-        Text = "Enable Snaplines",
-        Default = false,
-        Callback = function(value)
-            snaplineSettings.Enabled = value
-            if not value then snapline.Visible = false end
-        end,
-    }):AddColorPicker("SnaplineColor", {
-        Default = Color3.fromRGB(0, 255, 0),
-    })
-
-    Options.SnaplineColor:OnChanged(function()
-        snaplineSettings.Color = Options.SnaplineColor.Value
-    end)
+    -- Snapline UI is added in the Silent Aim groupbox (Combat tab).
 
     -- Helper: check if feature is active via toggle OR keybind (supports Hold/Always/Toggle modes).
     local function isFeatureActive(settingsEnabled, optionKey)
@@ -2499,6 +2484,7 @@
         Enabled = false,
         FOV = 250,
         ShowFOV = false,
+        TargetPart = "Head",
     }
 
     -- Cached silent aim target (updated in RenderStepped, read in hook — avoids re-entrant __namecall).
@@ -2576,10 +2562,11 @@
         return npcs
     end
 
-    local function getClosestPlayerToCenter(fovOverride, includeNPCs)
+    local function getClosestPlayerToCenter(fovOverride, includeNPCs, targetPartOverride)
         local closest = nil
         local closestDist = fovOverride or aimbotSettings.FOV
         local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+        local partName = targetPartOverride or aimbotSettings.TargetPart
 
         -- Players.
         for _, player in ipairs(players:GetPlayers()) do
@@ -2587,7 +2574,7 @@
             local char = player.Character
             if not char or not validateTarget(char) then continue end
 
-            local targetPart = char:FindFirstChild(aimbotSettings.TargetPart)
+            local targetPart = char:FindFirstChild(partName)
                 or char:FindFirstChild("Head")
                 or char:FindFirstChild("HumanoidRootPart")
             if not targetPart then continue end
@@ -2607,7 +2594,7 @@
             for _, npc in ipairs(getNPCsFromAiZones()) do
                 if not validateNPC(npc) then continue end
 
-                local targetPart = npc:FindFirstChild(aimbotSettings.TargetPart)
+                local targetPart = npc:FindFirstChild(partName)
                     or npc:FindFirstChild("Head")
                     or npc:FindFirstChild("HumanoidRootPart")
                 if not targetPart then continue end
@@ -2653,7 +2640,7 @@
         -- Cache silent aim target for the hook (avoid re-entrant __namecall).
         local needsTarget = silentActive or ibVisActive or mbVisActive
         if needsTarget then
-            local sTarget = getClosestPlayerToCenter(silentAimSettings.FOV, silentAimNPCEnabled)
+            local sTarget = getClosestPlayerToCenter(silentAimSettings.FOV, silentAimNPCEnabled, silentAimSettings.TargetPart)
             silentAimTargetPos = sTarget and sTarget.Position or nil
             silentAimTargetPart = sTarget
         else
@@ -2786,6 +2773,15 @@
         end,
     })
 
+    SilentGroup:AddDropdown("SilentTargetPart", {
+        Text = "Target Part",
+        Values = { "Head", "HumanoidRootPart", "UpperTorso" },
+        Default = 1,
+        Callback = function(value)
+            silentAimSettings.TargetPart = value
+        end,
+    })
+
     SilentGroup:AddToggle("SilentShowFOV", {
         Text = "Show FOV",
         Default = false,
@@ -2804,6 +2800,21 @@
             silentAimSettings.FOV = value
         end,
     })
+
+    SilentGroup:AddToggle("SnaplineEnabled", {
+        Text = "Snaplines",
+        Default = false,
+        Callback = function(value)
+            snaplineSettings.Enabled = value
+            if not value then snapline.Visible = false end
+        end,
+    }):AddColorPicker("SnaplineColor", {
+        Default = Color3.fromRGB(0, 255, 0),
+    })
+
+    Options.SnaplineColor:OnChanged(function()
+        snaplineSettings.Color = Options.SnaplineColor.Value
+    end)
 
     SilentGroup:AddDivider()
 
@@ -3030,6 +3041,246 @@
     -- (set on every KeyPicker attached to a Toggle via :AddKeyPicker).
 
     -- ============================================================
+    -- INVENTORY PANEL (Floating overlay for silent aim target)
+    -- ============================================================
+
+    local invPanelSettings = {
+        Enabled = false,
+    }
+
+    local INV_MAX_LINES = 25
+    local INV_FONT_SIZE = 13
+    local INV_LINE_HEIGHT = 15
+    local INV_PADDING = 8
+    local INV_WIDTH = 220
+
+    -- Drawing objects for the panel.
+    local invBg = Drawing.new("Square")
+    invBg.Visible = false
+    invBg.Filled = true
+    invBg.Color = Color3.fromRGB(20, 20, 24)
+    invBg.Transparency = 0.85
+
+    local invBorder = Drawing.new("Square")
+    invBorder.Visible = false
+    invBorder.Filled = false
+    invBorder.Color = Color3.fromRGB(60, 60, 68)
+    invBorder.Thickness = 1
+
+    local invLines = {}
+    for i = 1, INV_MAX_LINES do
+        local line = Drawing.new("Text")
+        line.Visible = false
+        line.Size = INV_FONT_SIZE
+        line.Font = 0
+        line.Outline = true
+        line.OutlineColor = Color3.fromRGB(0, 0, 0)
+        line.Color = Color3.fromRGB(220, 220, 225)
+        table.insert(invLines, line)
+    end
+
+    local function hideInvPanel()
+        invBg.Visible = false
+        invBorder.Visible = false
+        for _, line in ipairs(invLines) do
+            line.Visible = false
+        end
+    end
+
+    local function checkTargetVisible(targetChar)
+        if not targetChar then return false end
+        local head = targetChar:FindFirstChild("Head")
+        if not head then return false end
+
+        local origin = camera.CFrame.Position
+        local target = head.Position
+        local direction = (target - origin)
+
+        local myChar = localPlayer.Character
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        local filterList = {}
+        if myChar then table.insert(filterList, myChar) end
+        rayParams.FilterDescendantsInstances = filterList
+
+        local result = workspace:Raycast(origin, direction, rayParams)
+        if not result then return false end
+
+        -- Check if hit instance belongs to the target character.
+        local hitInst = result.Instance
+        local current = hitInst
+        while current do
+            if current == targetChar then return true end
+            current = current.Parent
+        end
+        return false
+    end
+
+    local function getPlayerFromPart(part)
+        if not part then return nil end
+        local model = part.Parent
+        if not model then return nil end
+        for _, player in ipairs(players:GetPlayers()) do
+            if player.Character == model then return player end
+        end
+        return nil
+    end
+
+    local function buildInventoryLines(player)
+        local lines = {}
+        local rsPlayers = replicatedStorage:FindFirstChild("Players")
+        if not rsPlayers then return lines end
+        local playerFolder = rsPlayers:FindFirstChild(player.Name)
+        if not playerFolder then return lines end
+
+        for _, child in ipairs(playerFolder:GetChildren()) do
+            local name = child.Name
+
+            if child:IsA("Folder") and name == "Inventory" then
+                -- Inventory subfolder: contains mags with ammo info.
+                for _, item in ipairs(child:GetChildren()) do
+                    local ammoText = ""
+                    local loadedAmmo = item:FindFirstChild("LoadedAmmo")
+                    if loadedAmmo then
+                        local ammoFolder = loadedAmmo:FindFirstChildWhichIsA("Folder")
+                        if ammoFolder then
+                            ammoText = " [" .. #ammoFolder:GetChildren() .. "]"
+                        end
+                    end
+                    table.insert(lines, {text = "  " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
+                end
+            elseif child:IsA("Folder") then
+                -- Weapon or clothing folder with children.
+                table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
+
+                -- Check for Attachments subfolder.
+                local attachments = child:FindFirstChild("Attachments")
+                if attachments then
+                    for _, att in ipairs(attachments:GetChildren()) do
+                        table.insert(lines, {text = "  + " .. att.Name, color = Color3.fromRGB(140, 180, 255)})
+                    end
+                end
+
+                -- Check for Inventory subfolder inside clothing/gear.
+                local innerInv = child:FindFirstChild("Inventory")
+                if innerInv then
+                    for _, item in ipairs(innerInv:GetChildren()) do
+                        local ammoText = ""
+                        local loadedAmmo = item:FindFirstChild("LoadedAmmo")
+                        if loadedAmmo then
+                            local ammoFolder = loadedAmmo:FindFirstChildWhichIsA("Folder")
+                            if ammoFolder then
+                                ammoText = " [" .. #ammoFolder:GetChildren() .. "]"
+                            end
+                        end
+                        table.insert(lines, {text = "  > " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
+                    end
+                end
+            else
+                -- Loose item (not a folder): mags, ammo, etc.
+                table.insert(lines, {text = name, color = Color3.fromRGB(200, 200, 200)})
+            end
+        end
+
+        return lines
+    end
+
+    local _invUpdateTick = 0
+    local _invCachedLines = {}
+    local _invCachedPlayer = nil
+
+    runService.Heartbeat:Connect(function()
+        if not invPanelSettings.Enabled then
+            hideInvPanel()
+            return
+        end
+
+        -- Only show when silent aim has a target.
+        local targetPart = silentAimTargetPart
+        if not targetPart then
+            hideInvPanel()
+            _invCachedPlayer = nil
+            return
+        end
+
+        local targetPlayer = getPlayerFromPart(targetPart)
+        if not targetPlayer then
+            hideInvPanel()
+            _invCachedPlayer = nil
+            return
+        end
+
+        -- Throttle inventory reads to ~5/sec.
+        _invUpdateTick = _invUpdateTick + 1
+        if _invUpdateTick % 12 == 0 or targetPlayer ~= _invCachedPlayer then
+            _invCachedPlayer = targetPlayer
+            _invCachedLines = {}
+
+            -- Header: player name.
+            local targetChar = targetPlayer.Character
+            local isVisible = checkTargetVisible(targetChar)
+            local visText = isVisible and "VISIBLE" or "HIDDEN"
+            local visColor = isVisible and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
+
+            table.insert(_invCachedLines, {text = targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")", color = Color3.fromRGB(255, 255, 255)})
+            table.insert(_invCachedLines, {text = visText, color = visColor})
+            table.insert(_invCachedLines, {text = "────────────", color = Color3.fromRGB(80, 80, 90)})
+
+            local invLines2 = buildInventoryLines(targetPlayer)
+            for _, line in ipairs(invLines2) do
+                table.insert(_invCachedLines, line)
+            end
+
+            if #invLines2 == 0 then
+                table.insert(_invCachedLines, {text = "(empty)", color = Color3.fromRGB(120, 120, 130)})
+            end
+        end
+
+        -- Render panel at top-right.
+        local lineCount = math.min(#_invCachedLines, INV_MAX_LINES)
+        if lineCount == 0 then
+            hideInvPanel()
+            return
+        end
+
+        local panelHeight = (lineCount * INV_LINE_HEIGHT) + (INV_PADDING * 2)
+        local panelX = camera.ViewportSize.X - INV_WIDTH - 10
+        local panelY = 10
+
+        invBg.Size = Vector2.new(INV_WIDTH, panelHeight)
+        invBg.Position = Vector2.new(panelX, panelY)
+        invBg.Visible = true
+
+        invBorder.Size = Vector2.new(INV_WIDTH, panelHeight)
+        invBorder.Position = Vector2.new(panelX, panelY)
+        invBorder.Visible = true
+
+        for i = 1, INV_MAX_LINES do
+            local drawLine = invLines[i]
+            if i <= lineCount then
+                local data = _invCachedLines[i]
+                drawLine.Text = data.text
+                drawLine.Color = data.color
+                drawLine.Position = Vector2.new(panelX + INV_PADDING, panelY + INV_PADDING + (i - 1) * INV_LINE_HEIGHT)
+                drawLine.Size = INV_FONT_SIZE
+                drawLine.Visible = true
+            else
+                drawLine.Visible = false
+            end
+        end
+    end)
+
+    -- Inventory Panel toggle in Silent Aim groupbox.
+    SilentGroup:AddToggle("InvPanel", {
+        Text = "Show Target Inventory",
+        Default = false,
+        Callback = function(value)
+            invPanelSettings.Enabled = value
+            if not value then hideInvPanel() end
+        end,
+    })
+
+    -- ============================================================
     -- WATERMARK
     -- ============================================================
 
@@ -3118,6 +3369,13 @@
 
         -- Clean up snapline.
         pcall(function() snapline:Remove() end)
+
+        -- Clean up inventory panel.
+        pcall(function() invBg:Remove() end)
+        pcall(function() invBorder:Remove() end)
+        for _, line in ipairs(invLines) do
+            pcall(function() line:Remove() end)
+        end
 
         -- Clean up speed.
         if speedConnection then speedConnection:Disconnect() end
