@@ -3090,6 +3090,34 @@
         return nil
     end
 
+    local function getAmmoInfo(item)
+        local loadedAmmo = item:FindFirstChild("LoadedAmmo")
+        if not loadedAmmo then return "" end
+        -- Count ammo: direct children of LoadedAmmo that are folders.
+        local ammoCount = 0
+        local ammoType = nil
+        for _, child in ipairs(loadedAmmo:GetChildren()) do
+            if child:IsA("Folder") then
+                -- This folder contains the actual rounds.
+                ammoCount = #child:GetChildren()
+                ammoType = child.Name
+                break
+            end
+        end
+        if ammoCount > 0 then
+            if ammoType then
+                return " [" .. ammoCount .. " " .. ammoType .. "]"
+            end
+            return " [" .. ammoCount .. "]"
+        end
+        -- Fallback: count direct children.
+        local directCount = #loadedAmmo:GetChildren()
+        if directCount > 0 then
+            return " [" .. directCount .. "]"
+        end
+        return ""
+    end
+
     local function buildInventoryLines(player)
         local lines = {}
         local rsPlayers = replicatedStorage:FindFirstChild("Players")
@@ -3098,46 +3126,42 @@
         if not playerFolder then return lines end
 
         for _, child in ipairs(playerFolder:GetChildren()) do
+            -- Skip non-item instances (values, constraints, etc.).
+            if not (child:IsA("Folder") or child:IsA("Model") or child:IsA("Tool")) then
+                continue
+            end
+
             local name = child.Name
 
             if child:IsA("Folder") and name == "Inventory" then
+                -- Inventory subfolder: contains mags with ammo.
                 for _, item in ipairs(child:GetChildren()) do
-                    local ammoText = ""
-                    local loadedAmmo = item:FindFirstChild("LoadedAmmo")
-                    if loadedAmmo then
-                        local ammoFolder = loadedAmmo:FindFirstChildWhichIsA("Folder")
-                        if ammoFolder then
-                            ammoText = " [" .. #ammoFolder:GetChildren() .. "]"
-                        end
-                    end
+                    if not (item:IsA("Folder") or item:IsA("Model") or item:IsA("Tool")) then continue end
+                    local ammoText = getAmmoInfo(item)
                     table.insert(lines, {text = "  " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
                 end
             elseif child:IsA("Folder") then
+                -- Weapon or clothing folder.
                 table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
 
                 local attachments = child:FindFirstChild("Attachments")
                 if attachments then
                     for _, att in ipairs(attachments:GetChildren()) do
-                        table.insert(lines, {text = "  + " .. att.Name, color = Color3.fromRGB(140, 180, 255)})
+                        if att:IsA("Folder") or att:IsA("Model") or att:IsA("Tool") then
+                            table.insert(lines, {text = "  + " .. att.Name, color = Color3.fromRGB(140, 180, 255)})
+                        end
                     end
                 end
 
+                -- Items inside clothing/gear.
                 local innerInv = child:FindFirstChild("Inventory")
                 if innerInv then
                     for _, item in ipairs(innerInv:GetChildren()) do
-                        local ammoText = ""
-                        local loadedAmmo = item:FindFirstChild("LoadedAmmo")
-                        if loadedAmmo then
-                            local ammoFolder = loadedAmmo:FindFirstChildWhichIsA("Folder")
-                            if ammoFolder then
-                                ammoText = " [" .. #ammoFolder:GetChildren() .. "]"
-                            end
-                        end
+                        if not (item:IsA("Folder") or item:IsA("Model") or item:IsA("Tool")) then continue end
+                        local ammoText = getAmmoInfo(item)
                         table.insert(lines, {text = "  > " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
                     end
                 end
-            else
-                table.insert(lines, {text = name, color = Color3.fromRGB(200, 200, 200)})
             end
         end
 
