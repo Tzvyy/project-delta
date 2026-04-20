@@ -764,6 +764,190 @@
     runService.RenderStepped:Connect(updateCorpseESP)
 
     -- ============================================================
+    -- EXPLOSIVE ESP (Mines = workspace.PMN2, Claymores = workspace.MON50)
+    -- ============================================================
+
+    local explosiveESPSettings = {
+        Enabled = false,
+        ShowMines = true,
+        ShowClaymores = true,
+        MaxDistance = 100,
+        MineColor = Color3.fromRGB(255, 50, 50),
+        ClaymoreColor = Color3.fromRGB(255, 165, 0),
+        FontSize = 13,
+    }
+
+    local explosiveESPObjects = {} -- [Instance] = { text = Drawing }
+
+    local function createExplosiveESP(instance)
+        if explosiveESPObjects[instance] then return end
+        if not instance:IsA("BasePart") and not instance:IsA("Model") then return end
+
+        local text = Drawing.new("Text")
+        text.Visible = false
+        text.Size = explosiveESPSettings.FontSize
+        text.Center = true
+        text.Outline = true
+        text.OutlineColor = Color3.fromRGB(0, 0, 0)
+        text.Font = 0
+
+        explosiveESPObjects[instance] = { text = text }
+    end
+
+    local function removeExplosiveESP(instance)
+        local esp = explosiveESPObjects[instance]
+        if not esp then return end
+        esp.text:Remove()
+        explosiveESPObjects[instance] = nil
+    end
+
+    local function getExplosiveType(instance)
+        local name = instance.Name
+        local parent = instance.Parent
+        if name == "PMN2" or (parent and parent.Name == "PMN2") then return "Mine" end
+        if name == "MON50" or (parent and parent.Name == "MON50") then return "Claymore" end
+        return nil
+    end
+
+    local function scanExplosiveFolder(folder)
+        if not folder then return end
+        for _, child in ipairs(folder:GetDescendants()) do
+            if child:IsA("BasePart") or child:IsA("Model") then
+                if getExplosiveType(child) then
+                    createExplosiveESP(child)
+                end
+            end
+        end
+    end
+
+    local _explosiveScanTick = 0
+
+    local function updateExplosiveESP()
+        if not explosiveESPSettings.Enabled then
+            for _, esp in pairs(explosiveESPObjects) do
+                esp.text.Visible = false
+            end
+            return
+        end
+
+        _explosiveScanTick = _explosiveScanTick + 1
+
+        -- Clean up destroyed explosives.
+        local dead = {}
+        for inst in pairs(explosiveESPObjects) do
+            if not inst.Parent then table.insert(dead, inst) end
+        end
+        for _, inst in ipairs(dead) do
+            explosiveESPObjects[inst].text:Remove()
+            explosiveESPObjects[inst] = nil
+        end
+
+        -- Scan for new explosives periodically.
+        if _explosiveScanTick % 60 == 0 then
+            scanExplosiveFolder(workspace:FindFirstChild("PMN2"))
+            scanExplosiveFolder(workspace:FindFirstChild("MON50"))
+        end
+
+        -- Update visuals.
+        for inst, esp in pairs(explosiveESPObjects) do
+            local expType = getExplosiveType(inst)
+            if not expType then
+                esp.text.Visible = false
+                continue
+            end
+
+            -- Filter by type toggle.
+            if expType == "Mine" and not explosiveESPSettings.ShowMines then
+                esp.text.Visible = false
+                continue
+            end
+            if expType == "Claymore" and not explosiveESPSettings.ShowClaymores then
+                esp.text.Visible = false
+                continue
+            end
+
+            local pos
+            if inst:IsA("Model") then
+                local primary = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart")
+                pos = primary and primary.Position
+            elseif inst:IsA("BasePart") then
+                pos = inst.Position
+            end
+
+            if not pos then
+                esp.text.Visible = false
+                continue
+            end
+
+            local screenPos, onScreen = camera:WorldToViewportPoint(pos)
+            local distance = (camera.CFrame.Position - pos).Magnitude
+
+            if not onScreen or distance > explosiveESPSettings.MaxDistance then
+                esp.text.Visible = false
+                continue
+            end
+
+            local color = expType == "Mine" and explosiveESPSettings.MineColor or explosiveESPSettings.ClaymoreColor
+            esp.text.Text = expType .. " [" .. math.floor(distance) .. "m]"
+            esp.text.Position = Vector2.new(screenPos.X, screenPos.Y)
+            esp.text.Color = color
+            esp.text.Size = explosiveESPSettings.FontSize
+            esp.text.Visible = true
+        end
+    end
+
+    -- Listen for new explosives.
+    local mineFolder = workspace:FindFirstChild("PMN2")
+    local claymoreFolder = workspace:FindFirstChild("MON50")
+
+    if mineFolder then
+        pcall(function()
+            mineFolder.DescendantAdded:Connect(function(desc)
+                if desc:IsA("BasePart") or desc:IsA("Model") then
+                    createExplosiveESP(desc)
+                end
+            end)
+            mineFolder.DescendantRemoving:Connect(function(desc)
+                removeExplosiveESP(desc)
+            end)
+        end)
+        scanExplosiveFolder(mineFolder)
+    end
+
+    if claymoreFolder then
+        pcall(function()
+            claymoreFolder.DescendantAdded:Connect(function(desc)
+                if desc:IsA("BasePart") or desc:IsA("Model") then
+                    createExplosiveESP(desc)
+                end
+            end)
+            claymoreFolder.DescendantRemoving:Connect(function(desc)
+                removeExplosiveESP(desc)
+            end)
+        end)
+        scanExplosiveFolder(claymoreFolder)
+    end
+
+    -- Also watch workspace for folders appearing later.
+    workspace.ChildAdded:Connect(function(child)
+        if child.Name == "PMN2" or child.Name == "MON50" then
+            pcall(function()
+                child.DescendantAdded:Connect(function(desc)
+                    if desc:IsA("BasePart") or desc:IsA("Model") then
+                        createExplosiveESP(desc)
+                    end
+                end)
+                child.DescendantRemoving:Connect(function(desc)
+                    removeExplosiveESP(desc)
+                end)
+            end)
+            scanExplosiveFolder(child)
+        end
+    end)
+
+    runService.RenderStepped:Connect(updateExplosiveESP)
+
+    -- ============================================================
     -- NPC ESP (same features as Player ESP, targets workspace.AiZones)
     -- ============================================================
 
@@ -1210,6 +1394,56 @@
         Rounding = 0,
         Callback = function(value)
             corpseESPSettings.MaxDistance = value
+        end,
+    })
+
+    -- Explosive ESP UI.
+    local ExplosiveGroup = Tabs.Visuals:AddRightGroupbox("Explosive ESP")
+
+    ExplosiveGroup:AddToggle("ExplosiveESP", {
+        Text = "Enable Explosive ESP",
+        Default = false,
+        Callback = function(value)
+            explosiveESPSettings.Enabled = value
+        end,
+    })
+
+    ExplosiveGroup:AddToggle("ExplosiveMines", {
+        Text = "Show Mines",
+        Default = true,
+        Callback = function(value)
+            explosiveESPSettings.ShowMines = value
+        end,
+    }):AddColorPicker("MineColor", {
+        Default = Color3.fromRGB(255, 50, 50),
+    })
+
+    ExplosiveGroup:AddToggle("ExplosiveClaymores", {
+        Text = "Show Claymores",
+        Default = true,
+        Callback = function(value)
+            explosiveESPSettings.ShowClaymores = value
+        end,
+    }):AddColorPicker("ClaymoreColor", {
+        Default = Color3.fromRGB(255, 165, 0),
+    })
+
+    Options.MineColor:OnChanged(function()
+        explosiveESPSettings.MineColor = Options.MineColor.Value
+    end)
+
+    Options.ClaymoreColor:OnChanged(function()
+        explosiveESPSettings.ClaymoreColor = Options.ClaymoreColor.Value
+    end)
+
+    ExplosiveGroup:AddSlider("ExplosiveMaxDist", {
+        Text = "Max Distance",
+        Default = 100,
+        Min = 10,
+        Max = 500,
+        Rounding = 0,
+        Callback = function(value)
+            explosiveESPSettings.MaxDistance = value
         end,
     })
 
@@ -2871,6 +3105,12 @@
         end
         corpseESPObjects = {}
 
+        -- Clean up explosive ESP.
+        for _, esp in pairs(explosiveESPObjects) do
+            pcall(function() esp.text:Remove() end)
+        end
+        explosiveESPObjects = {}
+
         -- Clean up NPC ESP.
         for npc, esp in pairs(npcESPObjects) do
             for key, drawing in pairs(esp) do
@@ -2952,6 +3192,7 @@
         containerESPSettings.Enabled = false
         exitESPSettings.Enabled = false
         corpseESPSettings.Enabled = false
+        explosiveESPSettings.Enabled = false
         tracerSettings.Enabled = false
         snaplineSettings.Enabled = false
 
