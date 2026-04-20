@@ -2407,11 +2407,16 @@
 
     local zoomSettings = {
         Enabled = false,
-        Level = 30, -- FOV value (lower = more zoomed in, default Roblox is 70)
+        Percent = 50, -- Zoom percentage (lower = more zoom)
     }
 
-    local originalFieldOfView = camera.FieldOfView
+    local originalFieldOfView = nil
     local _zoomWasActive = false
+
+    local function getZoomedFOV()
+        local base = originalFieldOfView or camera.FieldOfView
+        return math.clamp(base * (zoomSettings.Percent / 100), 1, 120)
+    end
 
     local ZoomGroup = Tabs.Movement:AddRightGroupbox("Zoom")
 
@@ -2425,9 +2430,12 @@
                     originalFieldOfView = camera.FieldOfView
                     _zoomWasActive = true
                 end
-                camera.FieldOfView = zoomSettings.Level
+                camera.FieldOfView = getZoomedFOV()
             else
-                camera.FieldOfView = originalFieldOfView
+                if originalFieldOfView then
+                    camera.FieldOfView = originalFieldOfView
+                end
+                originalFieldOfView = nil
                 _zoomWasActive = false
             end
         end,
@@ -2438,16 +2446,16 @@
     })
 
     ZoomGroup:AddSlider("ZoomLevel", {
-        Text = "Zoom Level",
-        Default = 30,
-        Min = 5,
-        Max = 70,
+        Text = "Zoom Amount",
+        Default = 50,
+        Min = 10,
+        Max = 90,
         Rounding = 0,
-        Suffix = " FOV",
+        Suffix = "%",
         Callback = function(value)
-            zoomSettings.Level = value
-            if zoomSettings.Enabled then
-                camera.FieldOfView = value
+            zoomSettings.Percent = value
+            if zoomSettings.Enabled and _zoomWasActive then
+                camera.FieldOfView = getZoomedFOV()
             end
         end,
     })
@@ -2459,13 +2467,18 @@
         local active = isFeatureActive(zoomSettings.Enabled, "ZoomKey")
         if active then
             if not _zoomWasActive then
+                originalFieldOfView = camera.FieldOfView
                 _zoomWasActive = true
             end
-            if camera.FieldOfView ~= zoomSettings.Level then
-                camera.FieldOfView = zoomSettings.Level
+            local target = getZoomedFOV()
+            if math.abs(camera.FieldOfView - target) > 0.1 then
+                camera.FieldOfView = target
             end
         elseif _zoomWasActive then
-            camera.FieldOfView = originalFieldOfView
+            if originalFieldOfView then
+                camera.FieldOfView = originalFieldOfView
+            end
+            originalFieldOfView = nil
             _zoomWasActive = false
         end
     end)
@@ -3152,7 +3165,7 @@
         end)
 
         -- Restore zoom.
-        if zoomSettings.Enabled then camera.FieldOfView = originalFieldOfView end
+        if zoomSettings.Enabled and originalFieldOfView then camera.FieldOfView = originalFieldOfView end
 
         -- Disable all settings to prevent lingering state.
         speedSettings.Enabled = false
