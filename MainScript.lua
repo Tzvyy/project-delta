@@ -3041,51 +3041,18 @@
     -- (set on every KeyPicker attached to a Toggle via :AddKeyPicker).
 
     -- ============================================================
-    -- INVENTORY PANEL (Floating overlay for silent aim target)
+    -- INVENTORY PANEL (JopLib floating panel for silent aim target)
     -- ============================================================
 
     local invPanelSettings = {
         Enabled = false,
     }
 
-    local INV_MAX_LINES = 25
-    local INV_FONT_SIZE = 13
-    local INV_LINE_HEIGHT = 15
-    local INV_PADDING = 8
-    local INV_WIDTH = 220
-
-    -- Drawing objects for the panel.
-    local invBg = Drawing.new("Square")
-    invBg.Visible = false
-    invBg.Filled = true
-    invBg.Color = Color3.fromRGB(20, 20, 24)
-    invBg.Transparency = 0.85
-
-    local invBorder = Drawing.new("Square")
-    invBorder.Visible = false
-    invBorder.Filled = false
-    invBorder.Color = Color3.fromRGB(60, 60, 68)
-    invBorder.Thickness = 1
-
-    local invLines = {}
-    for i = 1, INV_MAX_LINES do
-        local line = Drawing.new("Text")
-        line.Visible = false
-        line.Size = INV_FONT_SIZE
-        line.Font = 0
-        line.Outline = true
-        line.OutlineColor = Color3.fromRGB(0, 0, 0)
-        line.Color = Color3.fromRGB(220, 220, 225)
-        table.insert(invLines, line)
-    end
-
-    local function hideInvPanel()
-        invBg.Visible = false
-        invBorder.Visible = false
-        for _, line in ipairs(invLines) do
-            line.Visible = false
-        end
-    end
+    local invPanel = Library:CreateFloatingPanel({
+        Name = "InventoryPanel",
+        Title = "Target Inventory",
+        Width = 230,
+    })
 
     local function checkTargetVisible(targetChar)
         if not targetChar then return false end
@@ -3093,8 +3060,7 @@
         if not head then return false end
 
         local origin = camera.CFrame.Position
-        local target = head.Position
-        local direction = (target - origin)
+        local direction = (head.Position - origin)
 
         local myChar = localPlayer.Character
         local rayParams = RaycastParams.new()
@@ -3106,9 +3072,7 @@
         local result = workspace:Raycast(origin, direction, rayParams)
         if not result then return false end
 
-        -- Check if hit instance belongs to the target character.
-        local hitInst = result.Instance
-        local current = hitInst
+        local current = result.Instance
         while current do
             if current == targetChar then return true end
             current = current.Parent
@@ -3137,7 +3101,6 @@
             local name = child.Name
 
             if child:IsA("Folder") and name == "Inventory" then
-                -- Inventory subfolder: contains mags with ammo info.
                 for _, item in ipairs(child:GetChildren()) do
                     local ammoText = ""
                     local loadedAmmo = item:FindFirstChild("LoadedAmmo")
@@ -3150,10 +3113,8 @@
                     table.insert(lines, {text = "  " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
                 end
             elseif child:IsA("Folder") then
-                -- Weapon or clothing folder with children.
                 table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
 
-                -- Check for Attachments subfolder.
                 local attachments = child:FindFirstChild("Attachments")
                 if attachments then
                     for _, att in ipairs(attachments:GetChildren()) do
@@ -3161,7 +3122,6 @@
                     end
                 end
 
-                -- Check for Inventory subfolder inside clothing/gear.
                 local innerInv = child:FindFirstChild("Inventory")
                 if innerInv then
                     for _, item in ipairs(innerInv:GetChildren()) do
@@ -3177,7 +3137,6 @@
                     end
                 end
             else
-                -- Loose item (not a folder): mags, ammo, etc.
                 table.insert(lines, {text = name, color = Color3.fromRGB(200, 200, 200)})
             end
         end
@@ -3186,88 +3145,54 @@
     end
 
     local _invUpdateTick = 0
-    local _invCachedLines = {}
     local _invCachedPlayer = nil
 
     runService.Heartbeat:Connect(function()
         if not invPanelSettings.Enabled then
-            hideInvPanel()
+            invPanel:SetVisible(false)
             return
         end
 
-        -- Only show when silent aim has a target.
         local targetPart = silentAimTargetPart
         if not targetPart then
-            hideInvPanel()
+            invPanel:SetVisible(false)
             _invCachedPlayer = nil
             return
         end
 
         local targetPlayer = getPlayerFromPart(targetPart)
         if not targetPlayer then
-            hideInvPanel()
+            invPanel:SetVisible(false)
             _invCachedPlayer = nil
             return
         end
 
-        -- Throttle inventory reads to ~5/sec.
         _invUpdateTick = _invUpdateTick + 1
         if _invUpdateTick % 12 == 0 or targetPlayer ~= _invCachedPlayer then
             _invCachedPlayer = targetPlayer
-            _invCachedLines = {}
 
-            -- Header: player name.
             local targetChar = targetPlayer.Character
             local isVisible = checkTargetVisible(targetChar)
             local visText = isVisible and "VISIBLE" or "HIDDEN"
             local visColor = isVisible and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
 
-            table.insert(_invCachedLines, {text = targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")", color = Color3.fromRGB(255, 255, 255)})
-            table.insert(_invCachedLines, {text = visText, color = visColor})
-            table.insert(_invCachedLines, {text = "────────────", color = Color3.fromRGB(80, 80, 90)})
+            local displayLines = {}
+            table.insert(displayLines, {text = targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")", color = Color3.fromRGB(255, 255, 255)})
+            table.insert(displayLines, {text = visText, color = visColor})
 
             local invLines2 = buildInventoryLines(targetPlayer)
-            for _, line in ipairs(invLines2) do
-                table.insert(_invCachedLines, line)
-            end
-
-            if #invLines2 == 0 then
-                table.insert(_invCachedLines, {text = "(empty)", color = Color3.fromRGB(120, 120, 130)})
-            end
-        end
-
-        -- Render panel at top-right.
-        local lineCount = math.min(#_invCachedLines, INV_MAX_LINES)
-        if lineCount == 0 then
-            hideInvPanel()
-            return
-        end
-
-        local panelHeight = (lineCount * INV_LINE_HEIGHT) + (INV_PADDING * 2)
-        local panelX = camera.ViewportSize.X - INV_WIDTH - 10
-        local panelY = 10
-
-        invBg.Size = Vector2.new(INV_WIDTH, panelHeight)
-        invBg.Position = Vector2.new(panelX, panelY)
-        invBg.Visible = true
-
-        invBorder.Size = Vector2.new(INV_WIDTH, panelHeight)
-        invBorder.Position = Vector2.new(panelX, panelY)
-        invBorder.Visible = true
-
-        for i = 1, INV_MAX_LINES do
-            local drawLine = invLines[i]
-            if i <= lineCount then
-                local data = _invCachedLines[i]
-                drawLine.Text = data.text
-                drawLine.Color = data.color
-                drawLine.Position = Vector2.new(panelX + INV_PADDING, panelY + INV_PADDING + (i - 1) * INV_LINE_HEIGHT)
-                drawLine.Size = INV_FONT_SIZE
-                drawLine.Visible = true
+            if #invLines2 > 0 then
+                for _, line in ipairs(invLines2) do
+                    table.insert(displayLines, line)
+                end
             else
-                drawLine.Visible = false
+                table.insert(displayLines, {text = "(empty)", color = Color3.fromRGB(120, 120, 130)})
             end
+
+            invPanel:SetLines(displayLines)
         end
+
+        invPanel:SetVisible(true)
     end)
 
     -- Inventory Panel toggle in Silent Aim groupbox.
@@ -3276,7 +3201,7 @@
         Default = false,
         Callback = function(value)
             invPanelSettings.Enabled = value
-            if not value then hideInvPanel() end
+            if not value then invPanel:SetVisible(false) end
         end,
     })
 
@@ -3371,11 +3296,7 @@
         pcall(function() snapline:Remove() end)
 
         -- Clean up inventory panel.
-        pcall(function() invBg:Remove() end)
-        pcall(function() invBorder:Remove() end)
-        for _, line in ipairs(invLines) do
-            pcall(function() line:Remove() end)
-        end
+        pcall(function() invPanel:Destroy() end)
 
         -- Clean up speed.
         if speedConnection then speedConnection:Disconnect() end
