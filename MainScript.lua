@@ -3124,44 +3124,49 @@
         if not rsPlayers then return lines end
         local playerFolder = rsPlayers:FindFirstChild(player.Name)
         if not playerFolder then return lines end
+        local inventory = playerFolder:FindFirstChild("Inventory")
+        if not inventory then return lines end
 
-        for _, child in ipairs(playerFolder:GetChildren()) do
-            -- Skip non-item instances (values, constraints, etc.).
+        for _, child in ipairs(inventory:GetChildren()) do
             if not (child:IsA("Folder") or child:IsA("Model") or child:IsA("Tool")) then
                 continue
             end
 
             local name = child.Name
 
-            if child:IsA("Folder") and name == "Inventory" then
-                -- Inventory subfolder: contains mags with ammo.
-                for _, item in ipairs(child:GetChildren()) do
-                    if not (item:IsA("Folder") or item:IsA("Model") or item:IsA("Tool")) then continue end
-                    local ammoText = getAmmoInfo(item)
-                    table.insert(lines, {text = "  " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
-                end
-            elseif child:IsA("Folder") then
-                -- Weapon or clothing folder.
-                table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
-
+            if child:IsA("Folder") then
+                -- Weapon, clothing, or gear folder.
                 local attachments = child:FindFirstChild("Attachments")
+                local innerInv = child:FindFirstChild("Inventory")
+                local loadedAmmo = child:FindFirstChild("LoadedAmmo")
+
                 if attachments then
+                    -- Weapon with attachments.
+                    table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
                     for _, att in ipairs(attachments:GetChildren()) do
                         if att:IsA("Folder") or att:IsA("Model") or att:IsA("Tool") then
                             table.insert(lines, {text = "  + " .. att.Name, color = Color3.fromRGB(140, 180, 255)})
                         end
                     end
-                end
-
-                -- Items inside clothing/gear.
-                local innerInv = child:FindFirstChild("Inventory")
-                if innerInv then
+                elseif innerInv then
+                    -- Clothing/gear with sub-inventory.
+                    table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
                     for _, item in ipairs(innerInv:GetChildren()) do
                         if not (item:IsA("Folder") or item:IsA("Model") or item:IsA("Tool")) then continue end
                         local ammoText = getAmmoInfo(item)
                         table.insert(lines, {text = "  > " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
                     end
+                elseif loadedAmmo then
+                    -- Magazine with ammo.
+                    local ammoText = getAmmoInfo(child)
+                    table.insert(lines, {text = name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
+                else
+                    -- Generic folder item.
+                    table.insert(lines, {text = name, color = Color3.fromRGB(200, 200, 200)})
                 end
+            else
+                -- Loose item (Model/Tool).
+                table.insert(lines, {text = name, color = Color3.fromRGB(200, 200, 200)})
             end
         end
 
