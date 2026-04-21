@@ -2707,7 +2707,13 @@
         Callback = function(value)
             aimbotSettings.ShowFOV = value
         end,
+    }):AddColorPicker("AimFOVColor", {
+        Default = Color3.fromRGB(255, 255, 255),
     })
+
+    Options.AimFOVColor:OnChanged(function()
+        fovCircle.Color = Options.AimFOVColor.Value
+    end)
 
     AimbotGroup:AddSlider("AimFOV", {
         Text = "FOV Radius",
@@ -2788,7 +2794,13 @@
         Callback = function(value)
             silentAimSettings.ShowFOV = value
         end,
+    }):AddColorPicker("SilentFOVColor", {
+        Default = Color3.fromRGB(255, 50, 50),
     })
+
+    Options.SilentFOVColor:OnChanged(function()
+        silentFovCircle.Color = Options.SilentFOVColor.Value
+    end)
 
     SilentGroup:AddSlider("SilentFOV", {
         Text = "FOV Radius",
@@ -3093,27 +3105,20 @@
     local function getAmmoInfo(item)
         local loadedAmmo = item:FindFirstChild("LoadedAmmo")
         if not loadedAmmo then return "" end
-        -- Count ammo: direct children of LoadedAmmo that are folders.
-        local ammoCount = 0
-        local ammoType = nil
+        -- LoadedAmmo children have an Amount attribute for round count.
         for _, child in ipairs(loadedAmmo:GetChildren()) do
-            if child:IsA("Folder") then
-                -- This folder contains the actual rounds.
-                ammoCount = #child:GetChildren()
-                ammoType = child.Name
-                break
+            local amount = child:GetAttribute("Amount")
+            if amount and amount > 0 then
+                return " [" .. amount .. "]"
             end
         end
-        if ammoCount > 0 then
-            if ammoType then
-                return " [" .. ammoCount .. " " .. ammoType .. "]"
-            end
-            return " [" .. ammoCount .. "]"
-        end
-        -- Fallback: count direct children.
-        local directCount = #loadedAmmo:GetChildren()
-        if directCount > 0 then
-            return " [" .. directCount .. "]"
+        return ""
+    end
+
+    local function getItemAmount(item)
+        local amount = item:GetAttribute("Amount")
+        if amount and amount > 1 then
+            return " x" .. amount
         end
         return ""
     end
@@ -3129,29 +3134,31 @@
 
         for _, child in ipairs(inventory:GetChildren()) do
             local name = child.Name
+            local amountText = getItemAmount(child)
             local attachments = child:FindFirstChild("Attachments")
             local innerInv = child:FindFirstChild("Inventory")
             local loadedAmmo = child:FindFirstChild("LoadedAmmo")
 
             if attachments then
                 -- Weapon with attachments.
-                table.insert(lines, {text = name})
+                table.insert(lines, {text = name .. amountText})
                 for _, att in ipairs(attachments:GetChildren()) do
                     table.insert(lines, {text = "  + " .. att.Name})
                 end
             elseif innerInv then
                 -- Clothing/gear with sub-inventory.
-                table.insert(lines, {text = name})
+                table.insert(lines, {text = name .. amountText})
                 for _, item in ipairs(innerInv:GetChildren()) do
                     local ammoText = getAmmoInfo(item)
-                    table.insert(lines, {text = "  > " .. item.Name .. ammoText})
+                    local subAmount = getItemAmount(item)
+                    table.insert(lines, {text = "  > " .. item.Name .. ammoText .. subAmount})
                 end
             elseif loadedAmmo then
                 -- Magazine with ammo.
                 local ammoText = getAmmoInfo(child)
-                table.insert(lines, {text = name .. ammoText})
+                table.insert(lines, {text = name .. ammoText .. amountText})
             else
-                table.insert(lines, {text = name})
+                table.insert(lines, {text = name .. amountText})
             end
         end
 
