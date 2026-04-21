@@ -3128,45 +3128,30 @@
         if not inventory then return lines end
 
         for _, child in ipairs(inventory:GetChildren()) do
-            if not (child:IsA("Folder") or child:IsA("Model") or child:IsA("Tool")) then
-                continue
-            end
-
             local name = child.Name
+            local attachments = child:FindFirstChild("Attachments")
+            local innerInv = child:FindFirstChild("Inventory")
+            local loadedAmmo = child:FindFirstChild("LoadedAmmo")
 
-            if child:IsA("Folder") then
-                -- Weapon, clothing, or gear folder.
-                local attachments = child:FindFirstChild("Attachments")
-                local innerInv = child:FindFirstChild("Inventory")
-                local loadedAmmo = child:FindFirstChild("LoadedAmmo")
-
-                if attachments then
-                    -- Weapon with attachments.
-                    table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
-                    for _, att in ipairs(attachments:GetChildren()) do
-                        if att:IsA("Folder") or att:IsA("Model") or att:IsA("Tool") then
-                            table.insert(lines, {text = "  + " .. att.Name, color = Color3.fromRGB(140, 180, 255)})
-                        end
-                    end
-                elseif innerInv then
-                    -- Clothing/gear with sub-inventory.
-                    table.insert(lines, {text = name, color = Color3.fromRGB(255, 200, 80)})
-                    for _, item in ipairs(innerInv:GetChildren()) do
-                        if not (item:IsA("Folder") or item:IsA("Model") or item:IsA("Tool")) then continue end
-                        local ammoText = getAmmoInfo(item)
-                        table.insert(lines, {text = "  > " .. item.Name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
-                    end
-                elseif loadedAmmo then
-                    -- Magazine with ammo.
-                    local ammoText = getAmmoInfo(child)
-                    table.insert(lines, {text = name .. ammoText, color = Color3.fromRGB(180, 180, 180)})
-                else
-                    -- Generic folder item.
-                    table.insert(lines, {text = name, color = Color3.fromRGB(200, 200, 200)})
+            if attachments then
+                -- Weapon with attachments.
+                table.insert(lines, {text = name})
+                for _, att in ipairs(attachments:GetChildren()) do
+                    table.insert(lines, {text = "  + " .. att.Name})
                 end
+            elseif innerInv then
+                -- Clothing/gear with sub-inventory.
+                table.insert(lines, {text = name})
+                for _, item in ipairs(innerInv:GetChildren()) do
+                    local ammoText = getAmmoInfo(item)
+                    table.insert(lines, {text = "  > " .. item.Name .. ammoText})
+                end
+            elseif loadedAmmo then
+                -- Magazine with ammo.
+                local ammoText = getAmmoInfo(child)
+                table.insert(lines, {text = name .. ammoText})
             else
-                -- Loose item (Model/Tool).
-                table.insert(lines, {text = name, color = Color3.fromRGB(200, 200, 200)})
+                table.insert(lines, {text = name})
             end
         end
 
@@ -3206,7 +3191,7 @@
             local visColor = isVisible and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
 
             local displayLines = {}
-            table.insert(displayLines, {text = targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")", color = Color3.fromRGB(255, 255, 255)})
+            table.insert(displayLines, {text = targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")"})
             table.insert(displayLines, {text = visText, color = visColor})
 
             local invLines2 = buildInventoryLines(targetPlayer)
@@ -3215,7 +3200,7 @@
                     table.insert(displayLines, line)
                 end
             else
-                table.insert(displayLines, {text = "(empty)", color = Color3.fromRGB(120, 120, 130)})
+                table.insert(displayLines, {text = "(empty)"})
             end
 
             invPanel:SetLines(displayLines)
