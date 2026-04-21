@@ -429,8 +429,6 @@
         containerESPObjects[container] = nil
     end
 
-    local _containerScanTick = 0
-
     local function updateContainerESP()
         if not containerESPSettings.Enabled then
             for _, esp in pairs(containerESPObjects) do
@@ -439,28 +437,13 @@
             return
         end
 
-        _containerScanTick = _containerScanTick + 1
-
         -- Clean up destroyed containers.
         local deadContainers = {}
         for container in pairs(containerESPObjects) do
             if not container.Parent then table.insert(deadContainers, container) end
         end
         for _, container in ipairs(deadContainers) do
-            containerESPObjects[container].text:Remove()
-            containerESPObjects[container] = nil
-        end
-
-        -- Scan for new containers periodically (listeners handle most adds).
-        if _containerScanTick % 60 == 0 and containersFolder then
-            for _, child in ipairs(containersFolder:GetChildren()) do
-                createContainerESP(child)
-                if child:IsA("Folder") or child:IsA("Model") then
-                    for _, sub in ipairs(child:GetChildren()) do
-                        createContainerESP(sub)
-                    end
-                end
-            end
+            removeContainerESP(container)
         end
 
         -- Update visuals.
@@ -518,7 +501,7 @@
         end
     end
 
-    runService.RenderStepped:Connect(updateContainerESP)
+    runService.Heartbeat:Connect(updateContainerESP)
 
     -- ============================================================
     -- EXIT ESP
@@ -563,8 +546,6 @@
         exitESPObjects[exit] = nil
     end
 
-    local _exitScanTick = 0
-
     local function updateExitESP()
         if not exitESPSettings.Enabled then
             for _, esp in pairs(exitESPObjects) do
@@ -573,23 +554,13 @@
             return
         end
 
-        _exitScanTick = _exitScanTick + 1
-
         -- Clean up destroyed exits.
         local dead = {}
         for exit in pairs(exitESPObjects) do
             if not exit.Parent then table.insert(dead, exit) end
         end
         for _, exit in ipairs(dead) do
-            exitESPObjects[exit].text:Remove()
-            exitESPObjects[exit] = nil
-        end
-
-        -- Scan for new exits periodically (listeners handle most adds).
-        if _exitScanTick % 60 == 0 and exitLocationsFolder then
-            for _, child in ipairs(exitLocationsFolder:GetChildren()) do
-                createExitESP(child)
-            end
+            removeExitESP(exit)
         end
 
         -- Update visuals.
@@ -634,7 +605,7 @@
         end
     end
 
-    runService.RenderStepped:Connect(updateExitESP)
+    runService.Heartbeat:Connect(updateExitESP)
 
     -- ============================================================
     -- CORPSE ESP (workspace.DroppedItems.<playerName>)
@@ -681,8 +652,6 @@
         corpseESPObjects[model] = nil
     end
 
-    local _corpseScanTick = 0
-
     local function updateCorpseESP()
         if not corpseESPSettings.Enabled then
             for _, esp in pairs(corpseESPObjects) do
@@ -691,29 +660,13 @@
             return
         end
 
-        _corpseScanTick = _corpseScanTick + 1
-
         -- Clean up destroyed corpses.
         local dead = {}
         for model in pairs(corpseESPObjects) do
             if not model.Parent then table.insert(dead, model) end
         end
         for _, model in ipairs(dead) do
-            corpseESPObjects[model].text:Remove()
-            corpseESPObjects[model] = nil
-        end
-
-        -- Scan DroppedItems periodically (listeners handle most adds).
-        if _corpseScanTick % 60 == 0 and droppedItemsFolder then
-            for _, playerFolder in ipairs(droppedItemsFolder:GetChildren()) do
-                if playerFolder:IsA("Folder") or playerFolder:IsA("Model") then
-                    for _, child in ipairs(playerFolder:GetChildren()) do
-                        if child:IsA("Model") then
-                            createCorpseESP(child)
-                        end
-                    end
-                end
-            end
+            removeCorpseESP(model)
         end
 
         -- Update visuals.
@@ -762,7 +715,7 @@
         end)
     end
 
-    runService.RenderStepped:Connect(updateCorpseESP)
+    runService.Heartbeat:Connect(updateCorpseESP)
 
     -- ============================================================
     -- EXPLOSIVE ESP (Mines = workspace.PMN2, Claymores = workspace.MON50)
@@ -962,11 +915,7 @@
         npcESPObjects[npc] = nil
     end
 
-    local _npcScanTick = 0
-
     local function updateNPCESP()
-        _npcScanTick = _npcScanTick + 1
-
         -- Clean up destroyed NPCs (collect first to avoid modifying during iteration).
         local deadNPCs = {}
         for npc in pairs(npcESPObjects) do
@@ -975,19 +924,6 @@
         for _, npc in ipairs(deadNPCs) do
             cachedNPCSet[npc] = nil
             removeNPCESP(npc)
-        end
-
-        -- Scan for new NPCs periodically (listeners handle most adds).
-        if _npcScanTick % 60 == 0 then
-            local aiFolder = workspace:FindFirstChild("AiZones")
-            if aiFolder then
-                for _, desc in ipairs(aiFolder:GetDescendants()) do
-                    if desc:IsA("Model") and desc:FindFirstChildOfClass("Humanoid") and not npcESPObjects[desc] then
-                        cachedNPCSet[desc] = true
-                        createNPCESP(desc)
-                    end
-                end
-            end
         end
 
         for npc, esp in pairs(npcESPObjects) do
@@ -1635,7 +1571,8 @@
 
             if elapsed >= tracerSettings.Duration then
                 t.part:Destroy()
-                table.remove(activeTracers, i)
+                activeTracers[i] = activeTracers[#activeTracers]
+                activeTracers[#activeTracers] = nil
             else
                 t.part.Transparency = elapsed / tracerSettings.Duration
                 if not t.isHit then
@@ -1647,6 +1584,9 @@
 
     -- Tracers are drawn when FireProjectile is detected in the namecall hook.
     -- Uses camera origin for accuracy and avoids going through the hook for raycast.
+    local _tracerRayParams = RaycastParams.new()
+    _tracerRayParams.FilterType = Enum.RaycastFilterType.Exclude
+
     function fireTracer(direction)
         if not tracerSettings.Enabled then return end
         if typeof(direction) ~= "Vector3" then return end
@@ -1658,9 +1598,8 @@
         local dir = direction.Unit * 2000
 
         -- Raycast without going through the hook.
-        local rayParams = RaycastParams.new()
-        rayParams.FilterType = Enum.RaycastFilterType.Exclude
-        rayParams.FilterDescendantsInstances = {character}
+        _tracerRayParams.FilterDescendantsInstances = {character}
+        local rayParams = _tracerRayParams
 
         local result = nil
         pcall(function()
@@ -1758,6 +1697,9 @@
         Color = Color3.fromRGB(255, 255, 255),
         VisibilityColor = false,
     }
+
+    local _visRayParams = RaycastParams.new()
+    _visRayParams.FilterType = Enum.RaycastFilterType.Exclude
 
     local snapline = Drawing.new("Line")
     snapline.Visible = false
@@ -2625,10 +2567,8 @@
                         local origin = camera.CFrame.Position
                         local dir = (head.Position - origin)
                         local myChar = localPlayer.Character
-                        local rp = RaycastParams.new()
-                        rp.FilterType = Enum.RaycastFilterType.Exclude
-                        if myChar then rp.FilterDescendantsInstances = {myChar} end
-                        local res = workspace:Raycast(origin, dir, rp)
+                        _visRayParams.FilterDescendantsInstances = myChar and {myChar} or {}
+                        local res = workspace:Raycast(origin, dir, _visRayParams)
                         if res then
                             local cur = res.Instance
                             while cur do
@@ -3070,13 +3010,9 @@
         local direction = (head.Position - origin)
 
         local myChar = localPlayer.Character
-        local rayParams = RaycastParams.new()
-        rayParams.FilterType = Enum.RaycastFilterType.Exclude
-        local filterList = {}
-        if myChar then table.insert(filterList, myChar) end
-        rayParams.FilterDescendantsInstances = filterList
+        _visRayParams.FilterDescendantsInstances = myChar and {myChar} or {}
 
-        local result = workspace:Raycast(origin, direction, rayParams)
+        local result = workspace:Raycast(origin, direction, _visRayParams)
         if not result then return false end
 
         local current = result.Instance
@@ -3091,10 +3027,7 @@
         if not part then return nil end
         local model = part.Parent
         if not model then return nil end
-        for _, player in ipairs(players:GetPlayers()) do
-            if player.Character == model then return player end
-        end
-        return nil
+        return players:GetPlayerFromCharacter(model)
     end
 
     local function getAmmoInfo(item)
@@ -3238,12 +3171,12 @@
             FPS = FrameCounter
             FrameTimer = tick()
             FrameCounter = 0
-        end
 
-        Library:SetWatermark(("Game Utility | %s fps | %s ms"):format(
-            math.floor(FPS),
-            math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
-        ))
+            Library:SetWatermark(("Game Utility | %s fps | %s ms"):format(
+                math.floor(FPS),
+                math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
+            ))
+        end
     end)
 
     -- ============================================================
