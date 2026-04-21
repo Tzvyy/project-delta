@@ -778,11 +778,10 @@
         FontSize = 13,
     }
 
-    local explosiveESPObjects = {} -- [Instance] = { text = Drawing }
+    local explosiveESPObjects = {} -- [Instance] = { text = Drawing, type = "Mine"|"Claymore" }
 
-    local function createExplosiveESP(instance)
+    local function createExplosiveESP(instance, expType)
         if explosiveESPObjects[instance] then return end
-        if not instance:IsA("BasePart") and not instance:IsA("Model") then return end
 
         local text = Drawing.new("Text")
         text.Visible = false
@@ -792,7 +791,7 @@
         text.OutlineColor = Color3.fromRGB(0, 0, 0)
         text.Font = 0
 
-        explosiveESPObjects[instance] = { text = text }
+        explosiveESPObjects[instance] = { text = text, type = expType }
     end
 
     local function removeExplosiveESP(instance)
@@ -802,33 +801,11 @@
         explosiveESPObjects[instance] = nil
     end
 
-    local function getExplosiveType(instance)
-        -- Check the instance itself and all ancestors for PMN2/MON50.
-        local current = instance
-        while current and current ~= workspace do
-            if current.Name == "PMN2" then return "Mine" end
-            if current.Name == "MON50" then return "Claymore" end
-            current = current.Parent
-        end
+    local function getExplosiveTypeFromName(name)
+        if name == "PMN2" then return "Mine" end
+        if name == "MON50" then return "Claymore" end
         return nil
     end
-
-    local function isExplosiveRoot(instance)
-        return instance.Name == "PMN2" or instance.Name == "MON50"
-    end
-
-    local function tryAddExplosive(instance)
-        if not (instance:IsA("BasePart") or instance:IsA("Model")) then return end
-        if isExplosiveRoot(instance) then
-            createExplosiveESP(instance)
-            return
-        end
-        if getExplosiveType(instance) then
-            createExplosiveESP(instance)
-        end
-    end
-
-    local _explosiveScanTick = 0
 
     local function updateExplosiveESP()
         if not explosiveESPSettings.Enabled then
@@ -838,36 +815,19 @@
             return
         end
 
-        _explosiveScanTick = _explosiveScanTick + 1
-
         -- Clean up destroyed explosives.
         local dead = {}
         for inst in pairs(explosiveESPObjects) do
             if not inst.Parent then table.insert(dead, inst) end
         end
         for _, inst in ipairs(dead) do
-            explosiveESPObjects[inst].text:Remove()
-            explosiveESPObjects[inst] = nil
-        end
-
-        -- Full workspace scan periodically for any PMN2/MON50 anywhere.
-        if _explosiveScanTick % 120 == 0 then
-            for _, desc in ipairs(workspace:GetDescendants()) do
-                if (desc:IsA("BasePart") or desc:IsA("Model")) and isExplosiveRoot(desc) then
-                    createExplosiveESP(desc)
-                end
-            end
+            removeExplosiveESP(inst)
         end
 
         -- Update visuals.
         for inst, esp in pairs(explosiveESPObjects) do
-            local expType = getExplosiveType(inst)
-            if not expType then
-                esp.text.Visible = false
-                continue
-            end
+            local expType = esp.type
 
-            -- Filter by type toggle.
             if expType == "Mine" and not explosiveESPSettings.ShowMines then
                 esp.text.Visible = false
                 continue
@@ -907,24 +867,26 @@
         end
     end
 
-    -- Initial scan: find all PMN2/MON50 anywhere in workspace.
+    -- Initial scan: find all PMN2/MON50 in workspace.
     for _, desc in ipairs(workspace:GetDescendants()) do
-        if (desc:IsA("BasePart") or desc:IsA("Model")) and isExplosiveRoot(desc) then
-            createExplosiveESP(desc)
+        local expType = getExplosiveTypeFromName(desc.Name)
+        if expType then
+            createExplosiveESP(desc, expType)
         end
     end
 
-    -- Listen globally for new instances anywhere in workspace.
+    -- Listen for new/removed instances.
     workspace.DescendantAdded:Connect(function(desc)
-        if (desc:IsA("BasePart") or desc:IsA("Model")) and isExplosiveRoot(desc) then
-            createExplosiveESP(desc)
+        local expType = getExplosiveTypeFromName(desc.Name)
+        if expType then
+            createExplosiveESP(desc, expType)
         end
     end)
     workspace.DescendantRemoving:Connect(function(desc)
         removeExplosiveESP(desc)
     end)
 
-    runService.RenderStepped:Connect(updateExplosiveESP)
+    runService.Heartbeat:Connect(updateExplosiveESP)
 
     -- ============================================================
     -- NPC ESP (same features as Player ESP, targets workspace.AiZones)
@@ -1793,7 +1755,8 @@
 
     local snaplineSettings = {
         Enabled = false,
-        Color = Color3.fromRGB(0, 255, 0),
+        Color = Color3.fromRGB(255, 255, 255),
+        VisibilityColor = false,
     }
 
     local snapline = Drawing.new("Line")
@@ -2654,7 +2617,30 @@
             if onS then
                 snapline.From = screenCenter
                 snapline.To = Vector2.new(sp.X, sp.Y)
-                snapline.Color = snaplineSettings.Color
+                if snaplineSettings.VisibilityColor then
+                    local targetModel = silentAimTargetPart.Parent
+                    local head = targetModel and targetModel:FindFirstChild("Head")
+                    local isVis = false
+                    if head then
+                        local origin = camera.CFrame.Position
+                        local dir = (head.Position - origin)
+                        local myChar = localPlayer.Character
+                        local rp = RaycastParams.new()
+                        rp.FilterType = Enum.RaycastFilterType.Exclude
+                        if myChar then rp.FilterDescendantsInstances = {myChar} end
+                        local res = workspace:Raycast(origin, dir, rp)
+                        if res then
+                            local cur = res.Instance
+                            while cur do
+                                if cur == targetModel then isVis = true; break end
+                                cur = cur.Parent
+                            end
+                        end
+                    end
+                    snapline.Color = isVis and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 50, 50)
+                else
+                    snapline.Color = snaplineSettings.Color
+                end
                 snapline.Visible = true
             else
                 snapline.Visible = false
@@ -2821,12 +2807,20 @@
             if not value then snapline.Visible = false end
         end,
     }):AddColorPicker("SnaplineColor", {
-        Default = Color3.fromRGB(0, 255, 0),
+        Default = Color3.fromRGB(255, 255, 255),
     })
 
     Options.SnaplineColor:OnChanged(function()
         snaplineSettings.Color = Options.SnaplineColor.Value
     end)
+
+    SilentGroup:AddToggle("SnaplineVisColor", {
+        Text = "Visibility Color",
+        Default = false,
+        Callback = function(value)
+            snaplineSettings.VisibilityColor = value
+        end,
+    })
 
     SilentGroup:AddDivider()
 
@@ -3063,7 +3057,8 @@
     local invPanel = Library:CreateFloatingPanel({
         Name = "InventoryPanel",
         Title = "Target Inventory",
-        Width = 230,
+        Width = 340,
+        Columns = 2,
     })
 
     local function checkTargetVisible(targetChar)
@@ -3198,8 +3193,8 @@
             local visColor = isVisible and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
 
             local displayLines = {}
-            table.insert(displayLines, {text = targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")"})
-            table.insert(displayLines, {text = visText, color = visColor})
+            table.insert(displayLines, {text = targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")", fullWidth = true})
+            table.insert(displayLines, {text = visText, color = visColor, fullWidth = true})
 
             local invLines2 = buildInventoryLines(targetPlayer)
             if #invLines2 > 0 then
