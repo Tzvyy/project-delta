@@ -60,6 +60,9 @@
         end
     end
 
+    -- Cleanup functions registered by do...end blocks for the unload handler.
+    local _cleanupFns = {}
+
     -- ============================================================
     -- BYPASS (runs immediately, UI added later in UI Settings tab)
     -- ============================================================
@@ -366,8 +369,10 @@
     -- ============================================================
     -- CONTAINER / LOOT ESP
     -- ============================================================
+    local containerESPSettings, containerTypeEnabled
+    do
 
-    local containerESPSettings = {
+    containerESPSettings = {
         Enabled = false,
         MaxDistance = 500,
         ShowDistance = false,
@@ -383,7 +388,7 @@
         "GrenadeCrate", "HiddenCache", "FilingCabinet", "Fridge",
         "CashRegister", "KGBBag",
     }
-    local containerTypeEnabled = {}
+    containerTypeEnabled = {}
     for _, name in ipairs(containerTypes) do
         containerTypeEnabled[name] = false
     end
@@ -503,11 +508,18 @@
 
     runService.Heartbeat:Connect(updateContainerESP)
 
+    table.insert(_cleanupFns, function()
+        for _, esp in pairs(containerESPObjects) do pcall(function() esp.text:Remove() end) end
+    end)
+    end -- Container ESP
+
     -- ============================================================
     -- EXIT ESP
     -- ============================================================
+    local exitESPSettings
+    do
 
-    local exitESPSettings = {
+    exitESPSettings = {
         Enabled = false,
         MaxDistance = 1000,
         Color = Color3.fromRGB(0, 255, 100),
@@ -607,11 +619,18 @@
 
     runService.Heartbeat:Connect(updateExitESP)
 
+    table.insert(_cleanupFns, function()
+        for _, esp in pairs(exitESPObjects) do pcall(function() esp.text:Remove() end) end
+    end)
+    end -- Exit ESP
+
     -- ============================================================
     -- CORPSE ESP (workspace.DroppedItems.<playerName>)
     -- ============================================================
+    local corpseESPSettings
+    do
 
-    local corpseESPSettings = {
+    corpseESPSettings = {
         Enabled = false,
         Color = Color3.fromRGB(255, 80, 80),
         ShowDistance = true,
@@ -717,11 +736,18 @@
 
     runService.Heartbeat:Connect(updateCorpseESP)
 
+    table.insert(_cleanupFns, function()
+        for _, esp in pairs(corpseESPObjects) do pcall(function() esp.text:Remove() end) end
+    end)
+    end -- Corpse ESP
+
     -- ============================================================
     -- EXPLOSIVE ESP (Mines = workspace.PMN2, Claymores = workspace.MON50)
     -- ============================================================
+    local explosiveESPSettings
+    do
 
-    local explosiveESPSettings = {
+    explosiveESPSettings = {
         Enabled = false,
         ShowMines = true,
         ShowClaymores = true,
@@ -840,6 +866,11 @@
     end)
 
     runService.Heartbeat:Connect(updateExplosiveESP)
+
+    table.insert(_cleanupFns, function()
+        for _, esp in pairs(explosiveESPObjects) do pcall(function() esp.text:Remove() end) end
+    end)
+    end -- Explosive ESP
 
     -- ============================================================
     -- NPC ESP (same features as Player ESP, targets workspace.AiZones)
@@ -1140,7 +1171,8 @@
         end,
     })
 
-    -- Container ESP UI.
+    -- Container/Exit/Corpse/Explosive ESP UI.
+    do
     local ContainerGroup = Tabs.Visuals:AddRightGroupbox("Container ESP")
 
     ContainerGroup:AddToggle("ContainerESP", {
@@ -1324,7 +1356,10 @@
         end,
     })
 
+    end -- Container/Exit/Corpse/Explosive ESP UI
+
     -- NPC ESP UI.
+    do
     local NPCESPGroup = Tabs.Visuals:AddLeftGroupbox("NPC ESP")
 
     NPCESPGroup:AddToggle("NPCESPEnabled", {
@@ -1403,10 +1438,13 @@
     Options.NPCESPSkeletonColor:OnChanged(function()
         npcESPSettings.SkeletonColor = Options.NPCESPSkeletonColor.Value
     end)
+    end -- NPC ESP UI
 
     -- ============================================================
     -- FULLBRIGHT & NO FOG
     -- ============================================================
+    local setFullbright, setNoFog
+    do
 
     local lighting = game:GetService("Lighting")
 
@@ -1424,7 +1462,7 @@
     -- Track effects we disable so we can restore them.
     local disabledEffects = {}
 
-    local function setFullbright(enabled)
+    setFullbright = function(enabled)
         if enabled then
             lighting.Brightness = 3
             lighting.ClockTime = 14
@@ -1473,7 +1511,7 @@
         end
     end
 
-    local function setNoFog(enabled)
+    setNoFog = function(enabled)
         if enabled then
             lighting.FogEnd = 1e9
             lighting.FogStart = 1e9
@@ -1523,11 +1561,23 @@
         end,
     })
 
+    table.insert(_cleanupFns, function()
+        pcall(function() setFullbright(false) end)
+        pcall(function() setNoFog(false) end)
+        pcall(function()
+            sethiddenproperty(workspace.Terrain, "Decoration", true)
+            sethiddenproperty(workspace.Terrain, "GrassLength", origGrassLength)
+        end)
+    end)
+    end -- Fullbright/Fog/Grass
+
     -- ============================================================
     -- BULLET TRACERS
     -- ============================================================
+    local tracerSettings, activeTracers
+    do
 
-    local tracerSettings = {
+    tracerSettings = {
         Enabled = false,
         Color = Color3.fromRGB(255, 0, 0),
         HitTracer = true,
@@ -1536,7 +1586,7 @@
         Duration = 0.5,
     }
 
-    local activeTracers = {}
+    activeTracers = {}
 
     -- Create a 3D tracer beam in the world that persists.
     local function drawTracer(origin, endpoint, isHit)
@@ -1689,6 +1739,11 @@
         tracerSettings.HitColor = Options.HitTracerColor.Value
     end)
 
+    table.insert(_cleanupFns, function()
+        for _, t in ipairs(activeTracers) do pcall(function() t.part:Destroy() end) end
+    end)
+    end -- Bullet Tracers
+
     -- ============================================================
     -- SNAPLINES (Silent Aim integration)
     -- ============================================================
@@ -1723,8 +1778,10 @@
     -- ============================================================
     -- SPEED
     -- ============================================================
+    local speedSettings
+    do
 
-    local speedSettings = {
+    speedSettings = {
         Enabled = false,
         Speed = 28,
         Method = "CFrame Burst",  -- "CFrame Burst", "CFrame Smooth", "State Spoof"
@@ -1884,11 +1941,19 @@
     SpeedGroup:AddLabel("Burst = move/pause cycles")
     SpeedGroup:AddLabel("Smooth = constant, keep low")
 
+    table.insert(_cleanupFns, function()
+        if speedConnection then speedConnection:Disconnect() end
+        speedSettings.Enabled = false
+    end)
+    end -- Speed
+
     -- ============================================================
     -- SPIDER (Wall Climb)
     -- ============================================================
+    local spiderSettings
+    do
 
-    local spiderSettings = {
+    spiderSettings = {
         Enabled = false,
         ClimbSpeed = 24,
     }
@@ -1959,11 +2024,19 @@
     SpiderGroup:AddLabel("Walk into walls to climb")
     SpiderGroup:AddLabel("Game has ladders = less sus")
 
+    table.insert(_cleanupFns, function()
+        if spiderConnection then spiderConnection:Disconnect() end
+        spiderSettings.Enabled = false
+    end)
+    end -- Spider
+
     -- ============================================================
     -- NO JUMP COOLDOWN
     -- ============================================================
+    local noJumpCDSettings
+    do
 
-    local noJumpCDSettings = {
+    noJumpCDSettings = {
         Enabled = false,
         Bhop = false,
         Debug = false,
@@ -2121,6 +2194,14 @@
 
     JumpGroup:AddLabel("Bhop = hold space to auto-jump")
 
+    table.insert(_cleanupFns, function()
+        if noJumpCDConnection then noJumpCDConnection:Disconnect() end
+        if noJumpCDStateConn then noJumpCDStateConn:Disconnect() end
+        if noJumpCDCharConn then noJumpCDCharConn:Disconnect() end
+        noJumpCDSettings.Enabled = false
+    end)
+    end -- No Jump Cooldown
+
     -- Forward declaration for spinSettings (used in third person loop).
     local spinSettings = {
         Enabled = false,
@@ -2130,8 +2211,10 @@
     -- ============================================================
     -- THIRD PERSON (fixed distance, always shift lock)
     -- ============================================================
+    local tpCamSettings, setThirdPerson
+    do
 
-    local tpCamSettings = {
+    tpCamSettings = {
         Enabled = false,
         Distance = 10,
         ShiftLock = true,
@@ -2142,7 +2225,7 @@
     local originalCamMode = nil
     local originalMouseBehavior = nil
 
-    local function setThirdPerson(enabled)
+    setThirdPerson = function(enabled)
         local playerObj = localPlayer
 
         if enabled then
@@ -2243,10 +2326,17 @@
     TPCamGroup:AddLabel("Fixed distance, no zoom")
     TPCamGroup:AddLabel("Shift lock = character faces cam")
 
+    table.insert(_cleanupFns, function()
+        if tpCamSettings.Enabled then setThirdPerson(false) end
+        tpCamSettings.Enabled = false
+    end)
+    end -- Third Person
+
     -- ============================================================
     -- SPINBOT
     -- ============================================================
 
+    do
     local spinAngle = 0
     local spinConnection = nil
 
@@ -2292,326 +2382,19 @@
     SpinGroup:AddLabel("Spins your character model")
     SpinGroup:AddLabel("Visual only if FP camera")
 
-    -- ============================================================
-    -- DESYNC (Fake Lag) — PlatformStand + BodyVelocity method
-    -- ============================================================
-    --
-    -- How it works:
-    --   1. PlatformStand = true → engine suppresses normal CFrame replication
-    --      (server-side "ghost" is locked at the activation position)
-    --   2. BodyVelocity + BodyGyro move the character on the client
-    --      (physics-based: real wall collisions, gravity, no clipping)
-    --   3. On disable: destroy movers, exit PlatformStand → character stays
-    --
-
-    local desyncSettings = {
-        Enabled = false,
-        Method = "Hold",          -- "Hold" or "Auto Pulse"
-        FreezeDuration = 0.3,     -- Auto Pulse: seconds to stay frozen
-        ResyncDuration = 0.1,     -- Auto Pulse: seconds to stay synced
-        ShowGhost = true,         -- Show circle at server position
-    }
-
-    local desyncFrozen = false
-    local desyncServerCFrame = nil   -- Where the server thinks we are
-    local desyncBodyVelocity = nil
-    local desyncBodyGyro = nil
-    local desyncConnection = nil
-    local desyncPulseTimer = 0
-    local desyncPulsePhase = "freeze" -- "freeze" or "resync"
-    local desyncJumpDebounce = false
-
-    -- Ghost circle indicator (Drawing).
-    local desyncGhostCircle = Drawing.new("Circle")
-    desyncGhostCircle.Visible = false
-    desyncGhostCircle.Color = Color3.fromRGB(255, 70, 70)
-    desyncGhostCircle.Thickness = 2
-    desyncGhostCircle.NumSides = 32
-    desyncGhostCircle.Radius = 20
-    desyncGhostCircle.Filled = false
-    desyncGhostCircle.Transparency = 0.8
-
-    local desyncGhostDot = Drawing.new("Circle")
-    desyncGhostDot.Visible = false
-    desyncGhostDot.Color = Color3.fromRGB(255, 70, 70)
-    desyncGhostDot.Thickness = 1
-    desyncGhostDot.NumSides = 16
-    desyncGhostDot.Radius = 4
-    desyncGhostDot.Filled = true
-    desyncGhostDot.Transparency = 0.9
-
-    local function updateGhostIndicator()
-        if not desyncFrozen or not desyncServerCFrame or not desyncSettings.ShowGhost then
-            desyncGhostCircle.Visible = false
-            desyncGhostDot.Visible = false
-            return
-        end
-
-        local serverPos = desyncServerCFrame.Position
-        local screenPos, onScreen = camera:WorldToViewportPoint(serverPos)
-        if onScreen then
-            local dist = (camera.CFrame.Position - serverPos).Magnitude
-            local radius = math.clamp(800 / dist, 8, 60)
-            desyncGhostCircle.Position = Vector2.new(screenPos.X, screenPos.Y)
-            desyncGhostCircle.Radius = radius
-            desyncGhostCircle.Visible = true
-            desyncGhostDot.Position = Vector2.new(screenPos.X, screenPos.Y)
-            desyncGhostDot.Radius = math.max(radius * 0.15, 2)
-            desyncGhostDot.Visible = true
-        else
-            desyncGhostCircle.Visible = false
-            desyncGhostDot.Visible = false
-        end
-    end
-
-    local function desyncFreeze()
-        if desyncFrozen then return end
-        local character = localPlayer.Character
-        if not character then return end
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character:FindFirstChild("Humanoid")
-        if not rootPart or not humanoid then return end
-
-        -- 1. Save the ghost position (server will stay here).
-        desyncServerCFrame = rootPart.CFrame
-
-        -- 2. Enter PlatformStand → suppresses normal CFrame replication.
-        humanoid.PlatformStand = true
-
-        -- 3. Create BodyVelocity for physics-based horizontal movement.
-        desyncBodyVelocity = Instance.new("BodyVelocity")
-        desyncBodyVelocity.Name = "_desyncBV"
-        desyncBodyVelocity.MaxForce = Vector3.new(100000, 0, 100000)
-        desyncBodyVelocity.Velocity = Vector3.zero
-        desyncBodyVelocity.P = 10000
-        desyncBodyVelocity.Parent = rootPart
-
-        -- 4. Create BodyGyro to keep the character upright.
-        desyncBodyGyro = Instance.new("BodyGyro")
-        desyncBodyGyro.Name = "_desyncBG"
-        desyncBodyGyro.MaxTorque = Vector3.new(400000, 400000, 400000)
-        desyncBodyGyro.D = 100
-        desyncBodyGyro.P = 10000
-        desyncBodyGyro.CFrame = rootPart.CFrame
-        desyncBodyGyro.Parent = rootPart
-
-        desyncFrozen = true
-        dlog("Desync: Frozen (PlatformStand) at " .. tostring(rootPart.Position))
-    end
-
-    local function desyncResync()
-        if not desyncFrozen then return end
-        local character = localPlayer.Character
-        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character and character:FindFirstChild("Humanoid")
-
-        -- Destroy body movers.
-        if desyncBodyVelocity then desyncBodyVelocity:Destroy(); desyncBodyVelocity = nil end
-        if desyncBodyGyro then desyncBodyGyro:Destroy(); desyncBodyGyro = nil end
-
-        -- Exit PlatformStand → character stays at client position.
-        if humanoid then
-            humanoid.PlatformStand = false
-            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
-
-        -- Zero velocity to prevent sliding.
-        if rootPart then
-            rootPart.AssemblyLinearVelocity = Vector3.zero
-            rootPart.AssemblyAngularVelocity = Vector3.zero
-        end
-
-        desyncFrozen = false
-        desyncServerCFrame = nil
-        desyncJumpDebounce = false
-
-        desyncGhostCircle.Visible = false
-        desyncGhostDot.Visible = false
-        dlog("Desync: Resynced to client position")
-    end
-
-    -- Process WASD movement → set BodyVelocity + handle jumping.
-    local function desyncProcessMovement(rootPart, humanoid)
-        if not desyncBodyVelocity then return end
-
-        -- Camera-relative WASD direction.
-        local camCF = camera.CFrame
-        local forward = (camCF.LookVector * Vector3.new(1, 0, 1))
-        if forward.Magnitude > 0 then forward = forward.Unit else forward = Vector3.zero end
-        local right = (camCF.RightVector * Vector3.new(1, 0, 1))
-        if right.Magnitude > 0 then right = right.Unit else right = Vector3.zero end
-
-        local moveDir = Vector3.zero
-        if userInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + forward end
-        if userInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - forward end
-        if userInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + right end
-        if userInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - right end
-
-        -- Apply horizontal velocity.
-        local speed = humanoid.WalkSpeed
-        if moveDir.Magnitude > 0 then
-            desyncBodyVelocity.Velocity = moveDir.Unit * speed
-        else
-            desyncBodyVelocity.Velocity = Vector3.zero
-        end
-
-        -- Keep BodyGyro facing movement/camera direction.
-        if desyncBodyGyro then
-            if moveDir.Magnitude > 0 then
-                desyncBodyGyro.CFrame = CFrame.Angles(0,
-                    math.atan2(-moveDir.X, -moveDir.Z), 0)
-            else
-                desyncBodyGyro.CFrame = CFrame.Angles(0,
-                    math.atan2(-camCF.LookVector.X, -camCF.LookVector.Z), 0)
-            end
-        end
-
-        -- Jumping: apply upward impulse when Space pressed and roughly on ground.
-        local wantsJump = userInputService:IsKeyDown(Enum.KeyCode.Space)
-        if wantsJump and not desyncJumpDebounce then
-            local currentVelY = rootPart.AssemblyLinearVelocity.Y
-            if math.abs(currentVelY) < 2 then
-                local jumpPower = humanoid.JumpPower
-                if jumpPower <= 0 then jumpPower = humanoid.JumpHeight * 2.2 end
-                if jumpPower <= 0 then jumpPower = 50 end
-                rootPart.AssemblyLinearVelocity = Vector3.new(
-                    rootPart.AssemblyLinearVelocity.X,
-                    jumpPower,
-                    rootPart.AssemblyLinearVelocity.Z
-                )
-                desyncJumpDebounce = true
-            end
-        elseif not wantsJump then
-            desyncJumpDebounce = false
-        end
-    end
-
-    desyncConnection = runService.Heartbeat:Connect(function(dt)
-        if not desyncSettings.Enabled then
-            if desyncFrozen then desyncResync() end
-            updateGhostIndicator()
-            return
-        end
-
-        if desyncSettings.Method == "Hold" then
-            local holding = false
-            if Options and Options["DesyncKey"] and type(Options["DesyncKey"].GetState) == "function" then
-                local ok, state = pcall(Options["DesyncKey"].GetState, Options["DesyncKey"])
-                if ok and state then holding = true end
-            end
-
-            if holding then
-                local character = localPlayer.Character
-                local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-                local humanoid = character and character:FindFirstChild("Humanoid")
-                if rootPart and humanoid then
-                    if not desyncFrozen then desyncFreeze() end
-                    desyncProcessMovement(rootPart, humanoid)
-                end
-            else
-                if desyncFrozen then desyncResync() end
-            end
-
-        elseif desyncSettings.Method == "Auto Pulse" then
-            desyncPulseTimer = desyncPulseTimer + dt
-
-            if desyncPulsePhase == "freeze" then
-                local character = localPlayer.Character
-                local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-                local humanoid = character and character:FindFirstChild("Humanoid")
-                if rootPart and humanoid then
-                    if not desyncFrozen then desyncFreeze() end
-                    desyncProcessMovement(rootPart, humanoid)
-                end
-
-                if desyncPulseTimer >= desyncSettings.FreezeDuration then
-                    desyncPulseTimer = 0
-                    desyncPulsePhase = "resync"
-                    desyncResync()
-                end
-            elseif desyncPulsePhase == "resync" then
-                if desyncPulseTimer >= desyncSettings.ResyncDuration then
-                    desyncPulseTimer = 0
-                    desyncPulsePhase = "freeze"
-                end
-            end
-        end
-
-        updateGhostIndicator()
+    table.insert(_cleanupFns, function()
+        if spinConnection then spinConnection:Disconnect() end
+        spinSettings.Enabled = false
     end)
+    end -- Spinbot
 
-    local DesyncGroup = Tabs.Movement:AddRightGroupbox("Desync")
+    -- ============================================================
+    -- DESYNC (Fake Lag) — Anchor + Stepped/Heartbeat/RenderStepped method
+    -- ============================================================
+    local desyncSettings
+    do
 
-    DesyncGroup:AddToggle("DesyncEnabled", {
-        Text = "Enable Desync",
-        Default = false,
-        Callback = function(value)
-            desyncSettings.Enabled = value
-            if not value then
-                desyncResync()
-                desyncPulseTimer = 0
-                desyncPulsePhase = "freeze"
-            end
-        end,
-    }):AddKeyPicker("DesyncKey", {
-        Default = "None",
-        Text = "Desync",
-        NoUI = false,
-    })
-
-    DesyncGroup:AddDropdown("DesyncMethod", {
-        Values = { "Hold", "Auto Pulse" },
-        Default = 1,
-        Text = "Method",
-        Callback = function(value)
-            desyncSettings.Method = value
-            desyncPulseTimer = 0
-            desyncPulsePhase = "freeze"
-            if desyncFrozen then desyncResync() end
-        end,
-    })
-
-    DesyncGroup:AddToggle("DesyncShowGhost", {
-        Text = "Show Ghost Position",
-        Default = true,
-        Callback = function(value)
-            desyncSettings.ShowGhost = value
-            if not value then
-                desyncGhostCircle.Visible = false
-                desyncGhostDot.Visible = false
-            end
-        end,
-    })
-
-    DesyncGroup:AddSlider("DesyncFreezeDur", {
-        Text = "Freeze Duration",
-        Default = 0.3,
-        Min = 0.1,
-        Max = 1.0,
-        Rounding = 2,
-        Suffix = "s",
-        Callback = function(value)
-            desyncSettings.FreezeDuration = value
-        end,
-    })
-
-    DesyncGroup:AddSlider("DesyncResyncDur", {
-        Text = "Resync Duration",
-        Default = 0.1,
-        Min = 0.05,
-        Max = 0.5,
-        Rounding = 2,
-        Suffix = "s",
-        Callback = function(value)
-            desyncSettings.ResyncDuration = value
-        end,
-    })
-
-    DesyncGroup:AddLabel("PlatformStand suppresses replication")
-    DesyncGroup:AddLabel("Physics collisions still work")
-    DesyncGroup:AddLabel("On disable you stay at your position")
-
-    local desyncSettings = {
+    desyncSettings = {
         Enabled = false,
         Method = "Hold",          -- "Hold" or "Auto Pulse"
         FreezeDuration = 0.3,     -- Auto Pulse: seconds to stay frozen
@@ -2886,11 +2669,37 @@
     DesyncGroup:AddLabel("On disable you stay at your position")
     DesyncGroup:AddLabel("Walk, jump, collide normally")
 
+    table.insert(_cleanupFns, function()
+        if desyncSteppedConn then desyncSteppedConn:Disconnect() end
+        if desyncHeartbeatConn then desyncHeartbeatConn:Disconnect() end
+        if desyncRenderConn then desyncRenderConn:Disconnect() end
+        if desyncFrozen then
+            pcall(function()
+                local character = localPlayer.Character
+                if character then
+                    local rootPart = character:FindFirstChild("HumanoidRootPart")
+                    if rootPart then
+                        if desyncClientCFrame then rootPart.CFrame = desyncClientCFrame end
+                        rootPart.Anchored = false
+                        rootPart.AssemblyLinearVelocity = Vector3.zero
+                        rootPart.AssemblyAngularVelocity = Vector3.zero
+                    end
+                end
+            end)
+        end
+        pcall(function() desyncGhostCircle:Remove() end)
+        pcall(function() desyncGhostDot:Remove() end)
+        desyncSettings.Enabled = false
+    end)
+    end -- Desync
+
     -- ============================================================
     -- ZOOM
     -- ============================================================
+    local zoomSettings
+    do
 
-    local zoomSettings = {
+    zoomSettings = {
         Enabled = false,
         Percent = 50, -- Zoom percentage (lower = more zoom)
     }
@@ -2967,6 +2776,14 @@
             _zoomWasActive = false
         end
     end)
+
+    table.insert(_cleanupFns, function()
+        if _zoomWasActive and originalFieldOfView then
+            camera.FieldOfView = originalFieldOfView
+        end
+        zoomSettings.Enabled = false
+    end)
+    end -- Zoom
 
     -- ============================================================
     -- AIMBOT (Camera Lock)
@@ -3788,7 +3605,10 @@
         scriptUnloaded = true
         WatermarkConnection:Disconnect()
 
-        -- Clean up player ESP.
+        -- Run all registered cleanup functions (from do...end scoped sections).
+        for _, fn in ipairs(_cleanupFns) do pcall(fn) end
+
+        -- Clean up player ESP (outer scope).
         for _, esp in pairs(espObjects) do
             for key, drawing in pairs(esp) do
                 if key == "bones" then
@@ -3798,34 +3618,9 @@
                 end
             end
         end
-        espObjects = {}
 
-        -- Clean up container ESP.
-        for _, esp in pairs(containerESPObjects) do
-            pcall(function() esp.text:Remove() end)
-        end
-        containerESPObjects = {}
-
-        -- Clean up exit ESP.
-        for _, esp in pairs(exitESPObjects) do
-            pcall(function() esp.text:Remove() end)
-        end
-        exitESPObjects = {}
-
-        -- Clean up corpse ESP.
-        for _, esp in pairs(corpseESPObjects) do
-            pcall(function() esp.text:Remove() end)
-        end
-        corpseESPObjects = {}
-
-        -- Clean up explosive ESP.
-        for _, esp in pairs(explosiveESPObjects) do
-            pcall(function() esp.text:Remove() end)
-        end
-        explosiveESPObjects = {}
-
-        -- Clean up NPC ESP.
-        for npc, esp in pairs(npcESPObjects) do
+        -- Clean up NPC ESP (outer scope).
+        for _, esp in pairs(npcESPObjects) do
             for key, drawing in pairs(esp) do
                 if key == "bones" then
                     for _, bone in ipairs(drawing) do pcall(function() bone:Remove() end) end
@@ -3834,51 +3629,12 @@
                 end
             end
         end
-        npcESPObjects = {}
 
         -- Clean up snapline.
         pcall(function() snapline:Remove() end)
 
         -- Clean up inventory panel.
         pcall(function() invPanel:Destroy() end)
-
-        -- Clean up speed.
-        if speedConnection then speedConnection:Disconnect() end
-
-        -- Clean up no jump cooldown.
-        if noJumpCDConnection then noJumpCDConnection:Disconnect() end
-        if noJumpCDStateConn then noJumpCDStateConn:Disconnect() end
-        if noJumpCDCharConn then noJumpCDCharConn:Disconnect() end
-
-        -- Clean up spider.
-        if spiderConnection then spiderConnection:Disconnect() end
-
-        -- Clean up spinbot.
-        if spinConnection then spinConnection:Disconnect() end
-
-        -- Clean up desync.
-        if desyncSteppedConn then desyncSteppedConn:Disconnect() end
-        if desyncHeartbeatConn then desyncHeartbeatConn:Disconnect() end
-        if desyncRenderConn then desyncRenderConn:Disconnect() end
-        if desyncFrozen then
-            pcall(function()
-                local character = localPlayer.Character
-                if character then
-                    local rootPart = character:FindFirstChild("HumanoidRootPart")
-                    if rootPart then
-                        if desyncClientCFrame then
-                            rootPart.CFrame = desyncClientCFrame
-                        end
-                        rootPart.Anchored = false
-                        rootPart.AssemblyLinearVelocity = Vector3.zero
-                        rootPart.AssemblyAngularVelocity = Vector3.zero
-                    end
-                end
-            end)
-        end
-        pcall(function() desyncGhostCircle:Remove() end)
-        pcall(function() desyncGhostDot:Remove() end)
-        desyncSettings.Enabled = false
 
         -- Clean up render step bindings.
         pcall(function() runService:UnbindFromRenderStep("AimbotAndCache") end)
@@ -3887,40 +3643,12 @@
         pcall(function() fovCircle:Remove() end)
         pcall(function() silentFovCircle:Remove() end)
 
-        -- Clear active tracers.
-        for _, t in ipairs(activeTracers) do
-            pcall(function() t.part:Destroy() end)
-        end
-        activeTracers = {}
-
-        -- Restore fullbright and fog.
-        pcall(function() setFullbright(false) end)
-        pcall(function() setNoFog(false) end)
-
-        -- Restore grass.
-        pcall(function()
-            sethiddenproperty(workspace.Terrain, "Decoration", true)
-            sethiddenproperty(workspace.Terrain, "GrassLength", origGrassLength)
-        end)
-
-        -- Restore camera.
-        if tpCamSettings.Enabled then setThirdPerson(false) end
-
         -- Restore namecall hook.
         pcall(function()
             if oldNamecall then hookmetamethod(game, "__namecall", oldNamecall) end
         end)
 
-        -- Restore zoom.
-        if zoomSettings.Enabled and originalFieldOfView then camera.FieldOfView = originalFieldOfView end
-
-        -- Disable all settings to prevent lingering state.
-        speedSettings.Enabled = false
-        spiderSettings.Enabled = false
-        noJumpCDSettings.Enabled = false
-        spinSettings.Enabled = false
-        tpCamSettings.Enabled = false
-        zoomSettings.Enabled = false
+        -- Disable remaining outer-scope settings.
         aimbotSettings.Enabled = false
         silentAimSettings.Enabled = false
         instantBulletEnabled = false
