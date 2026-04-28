@@ -2389,6 +2389,342 @@
     end -- Spinbot
 
     -- ============================================================
+    -- DESYNC (Server Position Freeze)
+    -- ============================================================
+    --
+    -- 3-phase anchor cycle per frame:
+    --   Stepped  → unanchor, restore client CFrame + velocity → physics runs
+    --   Heartbeat → save post-physics state, anchor at server pos → replicator
+    --              sees anchored part → does NOT replicate movement
+    --   RenderStepped → override visual to client pos for correct display
+    --
+    local desyncSettings
+    do
+
+    desyncSettings = {
+        Enabled = false,
+        Mode = "Hold",            -- "Hold" or "Toggle"
+        MaxDistance = 150,         -- Auto-resync if client drifts further
+        ShowGhost = true,
+    }
+
+    -- Core state.
+    local frozen = false
+    local toggled = false         -- For Toggle mode
+    local serverCF = nil          -- Where the server thinks we are
+    local clientCF = nil          -- Where we actually are (post-physics)
+    local clientLinVel = Vector3.zero
+    local clientAngVel = Vector3.zero
+
+    -- Connections.
+    local steppedConn = nil
+    local heartbeatConn = nil
+    local renderConn = nil
+    local charConn = nil
+
+    -- Ghost drawings.
+    local ghostCircle = Drawing.new("Circle")
+    ghostCircle.Visible = false
+    ghostCircle.Color = Color3.fromRGB(255, 70, 70)
+    ghostCircle.Thickness = 2
+    ghostCircle.NumSides = 32
+    ghostCircle.Radius = 20
+    ghostCircle.Filled = false
+    ghostCircle.Transparency = 0.8
+
+    local ghostDot = Drawing.new("Circle")
+    ghostDot.Visible = false
+    ghostDot.Color = Color3.fromRGB(255, 70, 70)
+    ghostDot.Thickness = 1
+    ghostDot.NumSides = 16
+    ghostDot.Radius = 4
+    ghostDot.Filled = true
+    ghostDot.Transparency = 0.9
+
+    local ghostText = Drawing.new("Text")
+    ghostText.Visible = false
+    ghostText.Color = Color3.fromRGB(255, 70, 70)
+    ghostText.Size = 13
+    ghostText.Center = true
+    ghostText.Outline = true
+    ghostText.OutlineColor = Color3.fromRGB(0, 0, 0)
+    ghostText.Font = 2
+
+    local ghostLine = Drawing.new("Line")
+    ghostLine.Visible = false
+    ghostLine.Color = Color3.fromRGB(255, 70, 70)
+    ghostLine.Thickness = 1
+    ghostLine.Transparency = 0.5
+
+    local function hideGhost()
+        ghostCircle.Visible = false
+        ghostDot.Visible = false
+        ghostText.Visible = false
+        ghostLine.Visible = false
+    end
+
+    local function updateGhost()
+        if not frozen or not serverCF or not desyncSettings.ShowGhost then
+            hideGhost()
+            return
+        end
+
+        local sp, onS = camera:WorldToViewportPoint(serverCF.Position)
+        local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+        local ghostPos = Vector2.new(sp.X, sp.Y)
+
+        -- Distance between client and server in studs.
+        local dist = clientCF and (clientCF.Position - serverCF.Position).Magnitude or 0
+
+        if onS then
+            local camDist = (camera.CFrame.Position - serverCF.Position).Magnitude
+            local r = math.clamp(800 / camDist, 8, 60)
+
+            ghostCircle.Position = ghostPos
+            ghostCircle.Radius = r
+            ghostCircle.Visible = true
+
+            ghostDot.Position = ghostPos
+            ghostDot.Radius = math.max(r * 0.15, 2)
+            ghostDot.Visible = true
+
+            ghostText.Position = Vector2.new(ghostPos.X, ghostPos.Y + r + 4)
+            ghostText.Text = math.floor(dist) .. " studs"
+            ghostText.Visible = true
+        else
+            ghostCircle.Visible = false
+            ghostDot.Visible = false
+            ghostText.Visible = false
+        end
+
+        -- Direction line from screen center to ghost (always visible if frozen).
+        ghostLine.From = screenCenter
+        ghostLine.To = ghostPos
+        ghostLine.Visible = true
+    end
+
+    local function getRoot()
+        local ch = localPlayer.Character
+        return ch and ch:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function doFreeze()
+        if frozen then return end
+        local root = getRoot()
+        if not root then return end
+        serverCF = root.CFrame
+        clientCF = root.CFrame
+        clientLinVel = root.AssemblyLinearVelocity
+        clientAngVel = root.AssemblyAngularVelocity
+        frozen = true
+    end
+
+    local function doResync()
+        if not frozen then return end
+        local root = getRoot()
+        if root then
+            root.Anchored = false
+            if clientCF then
+                root.CFrame = clientCF
+                root.AssemblyLinearVelocity = clientLinVel
+                root.AssemblyAngularVelocity = clientAngVel
+            end
+        end
+        frozen = false
+        serverCF = nil
+        clientCF = nil
+        clientLinVel = Vector3.zero
+        clientAngVel = Vector3.zero
+        hideGhost()
+    end
+
+    -- Reset on respawn.
+    charConn = localPlayer.CharacterAdded:Connect(function()
+        if frozen then
+            frozen = false
+            toggled = false
+            serverCF = nil
+            clientCF = nil
+            clientLinVel = Vector3.zero
+            clientAngVel = Vector3.zero
+            hideGhost()
+        end
+    end)
+
+    -- Check if desync should be active this frame.
+    local function shouldBeActive()
+        if not desyncSettings.Enabled then return false end
+
+        if desyncSettings.Mode == "Hold" then
+            if Options and Options["DesyncKey"] and type(Options["DesyncKey"].GetState) == "function" then
+                local ok, st = pcall(Options["DesyncKey"].GetState, Options["DesyncKey"])
+                if ok and st then return true end
+            end
+            return false
+        elseif desyncSettings.Mode == "Toggle" then
+            return toggled
+        end
+        return false
+    end
+
+    -- ── Phase 1: Stepped (BEFORE physics) ──
+    steppedConn = runService.Stepped:Connect(function()
+        if not frozen then return end
+        local root = getRoot()
+        if not root then return end
+        -- Unanchor and restore client state so physics runs normally.
+        root.Anchored = false
+        root.CFrame = clientCF
+        root.AssemblyLinearVelocity = clientLinVel
+        root.AssemblyAngularVelocity = clientAngVel
+    end)
+
+    -- ── Phase 2: Heartbeat (AFTER physics, BEFORE network replication) ──
+    heartbeatConn = runService.Heartbeat:Connect(function()
+        if not desyncSettings.Enabled then
+            if frozen then doResync() end
+            hideGhost()
+            return
+        end
+
+        local active = shouldBeActive()
+
+        if active then
+            local root = getRoot()
+            if root then
+                if not frozen then
+                    doFreeze()
+                end
+                -- Save post-physics client state.
+                clientCF = root.CFrame
+                clientLinVel = root.AssemblyLinearVelocity
+                clientAngVel = root.AssemblyAngularVelocity
+
+                -- Max distance safety — auto-resync if too far.
+                local drift = (clientCF.Position - serverCF.Position).Magnitude
+                if drift > desyncSettings.MaxDistance then
+                    doResync()
+                    return
+                end
+
+                -- Anchor at server position → replicator sends nothing.
+                root.Anchored = true
+                root.CFrame = serverCF
+            end
+        else
+            if frozen then doResync() end
+        end
+
+        updateGhost()
+    end)
+
+    -- ── Phase 3: RenderStepped (BEFORE frame renders) ──
+    renderConn = runService.RenderStepped:Connect(function()
+        if not frozen or not clientCF then return end
+        local root = getRoot()
+        if root then
+            root.CFrame = clientCF
+        end
+    end)
+
+    -- Toggle mode keybind handler.
+    userInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if not desyncSettings.Enabled then return end
+        if desyncSettings.Mode ~= "Toggle" then return end
+        if Options and Options["DesyncKey"] then
+            local key = Options["DesyncKey"]
+            if key.Value and typeof(input.KeyCode) == "EnumItem" and input.KeyCode.Name == key.Value then
+                toggled = not toggled
+                if not toggled and frozen then doResync() end
+            end
+        end
+    end)
+
+    -- UI.
+    local DesyncGroup = Tabs.Movement:AddRightGroupbox("Desync")
+
+    DesyncGroup:AddToggle("DesyncEnabled", {
+        Text = "Enable Desync",
+        Default = false,
+        Callback = function(value)
+            desyncSettings.Enabled = value
+            if not value then
+                doResync()
+                toggled = false
+            end
+        end,
+    }):AddKeyPicker("DesyncKey", {
+        Default = "None",
+        Text = "Desync",
+        NoUI = false,
+        Mode = "Hold",
+    })
+
+    DesyncGroup:AddDropdown("DesyncMode", {
+        Values = { "Hold", "Toggle" },
+        Default = 1,
+        Text = "Mode",
+        Callback = function(value)
+            desyncSettings.Mode = value
+            if frozen then doResync() end
+            toggled = false
+        end,
+    })
+
+    DesyncGroup:AddSlider("DesyncMaxDist", {
+        Text = "Max Distance",
+        Default = 150,
+        Min = 50,
+        Max = 300,
+        Rounding = 0,
+        Suffix = " studs",
+        Callback = function(value)
+            desyncSettings.MaxDistance = value
+        end,
+    })
+
+    DesyncGroup:AddToggle("DesyncShowGhost", {
+        Text = "Show Ghost",
+        Default = true,
+        Callback = function(value)
+            desyncSettings.ShowGhost = value
+            if not value then hideGhost() end
+        end,
+    })
+
+    DesyncGroup:AddLabel("Server frozen, you move freely")
+    DesyncGroup:AddLabel("Ghost = where enemies see you")
+    DesyncGroup:AddLabel("Auto-resyncs past max distance")
+
+    table.insert(_cleanupFns, function()
+        if steppedConn then steppedConn:Disconnect() end
+        if heartbeatConn then heartbeatConn:Disconnect() end
+        if renderConn then renderConn:Disconnect() end
+        if charConn then charConn:Disconnect() end
+        if frozen then
+            pcall(function()
+                local root = getRoot()
+                if root then
+                    root.Anchored = false
+                    if clientCF then
+                        root.CFrame = clientCF
+                        root.AssemblyLinearVelocity = clientLinVel
+                        root.AssemblyAngularVelocity = clientAngVel
+                    end
+                end
+            end)
+        end
+        frozen = false
+        pcall(function() ghostCircle:Remove() end)
+        pcall(function() ghostDot:Remove() end)
+        pcall(function() ghostText:Remove() end)
+        pcall(function() ghostLine:Remove() end)
+        desyncSettings.Enabled = false
+    end)
+    end -- Desync
+
+    -- ============================================================
     -- ZOOM
     -- ============================================================
     local zoomSettings
