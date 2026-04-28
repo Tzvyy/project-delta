@@ -2419,7 +2419,6 @@
     -- Connections.
     local steppedConn = nil
     local heartbeatConn = nil
-    local renderConn = nil
     local charConn = nil
 
     -- Ghost drawings.
@@ -2618,8 +2617,10 @@
         updateGhost()
     end)
 
-    -- ── Phase 3: RenderStepped (BEFORE frame renders) ──
-    renderConn = runService.RenderStepped:Connect(function()
+    -- ── Phase 3: RenderStepped (BEFORE camera updates) ──
+    -- Must run before camera reads rootPart position, otherwise camera follows server pos.
+    local DESYNC_RENDER_KEY = "DesyncClientRestore"
+    runService:BindToRenderStep(DESYNC_RENDER_KEY, Enum.RenderPriority.Camera.Value - 1, function()
         if not frozen or not clientCF then return end
         local root = getRoot()
         if root then
@@ -2700,7 +2701,7 @@
     table.insert(_cleanupFns, function()
         if steppedConn then steppedConn:Disconnect() end
         if heartbeatConn then heartbeatConn:Disconnect() end
-        if renderConn then renderConn:Disconnect() end
+        pcall(function() runService:UnbindFromRenderStep(DESYNC_RENDER_KEY) end)
         if charConn then charConn:Disconnect() end
         if frozen then
             pcall(function()
