@@ -2389,215 +2389,181 @@
     end -- Spinbot
 
     -- ============================================================
-    -- DESYNC (Fake Lag) — Anchor + Stepped/Heartbeat/RenderStepped method
+    -- DESYNC (Fake Lag) — CFrame velocity-null method
     -- ============================================================
+    --
+    -- How it works:
+    --   The Roblox network replicator sends the HumanoidRootPart's CFrame
+    --   and velocity to the server every ~0.1s (Heartbeat boundary).
+    --   We exploit this by:
+    --     1. Letting the player move normally on the client (walk, jump, etc.)
+    --     2. On Heartbeat (AFTER physics): save real CFrame, then teleport
+    --        the rootPart to the frozen "server" position and zero velocity.
+    --        The replicator picks up this frozen state.
+    --     3. On RenderStepped (BEFORE next frame renders): teleport back to
+    --        the real client position so the player sees where they actually are.
+    --   Result: server sees you standing still, client moves freely.
+    --   No anchoring needed — physics runs normally on client side.
+    --
     local desyncSettings
     do
 
     desyncSettings = {
         Enabled = false,
         Method = "Hold",          -- "Hold" or "Auto Pulse"
-        FreezeDuration = 0.3,     -- Auto Pulse: seconds to stay frozen
-        ResyncDuration = 0.1,     -- Auto Pulse: seconds to stay synced
-        ShowGhost = true,         -- Show circle at server position
+        FreezeDuration = 0.3,     -- Auto Pulse only
+        ResyncDuration = 0.1,     -- Auto Pulse only
+        ShowGhost = true,
     }
 
-    local desyncFrozen = false
-    local desyncServerCFrame = nil   -- Where the server thinks we are
-    local desyncClientCFrame = nil   -- Where we actually are (post-physics)
-    local desyncSteppedConn = nil
-    local desyncHeartbeatConn = nil
-    local desyncRenderConn = nil
-    local desyncPulseTimer = 0
-    local desyncPulsePhase = "freeze" -- "freeze" or "resync"
+    local frozen = false
+    local serverCF = nil          -- CFrame the server thinks we're at
+    local clientCF = nil          -- CFrame we're actually at (post-physics)
+    local pulseTimer = 0
+    local pulsePhase = "freeze"   -- "freeze" or "resync"
+    local heartbeatConn = nil
+    local renderConn = nil
 
-    -- Ghost circle indicator (Drawing).
-    local desyncGhostCircle = Drawing.new("Circle")
-    desyncGhostCircle.Visible = false
-    desyncGhostCircle.Color = Color3.fromRGB(255, 70, 70)
-    desyncGhostCircle.Thickness = 2
-    desyncGhostCircle.NumSides = 32
-    desyncGhostCircle.Radius = 20
-    desyncGhostCircle.Filled = false
-    desyncGhostCircle.Transparency = 0.8
+    -- Ghost indicator drawings.
+    local ghostCircle = Drawing.new("Circle")
+    ghostCircle.Visible = false
+    ghostCircle.Color = Color3.fromRGB(255, 70, 70)
+    ghostCircle.Thickness = 2
+    ghostCircle.NumSides = 32
+    ghostCircle.Radius = 20
+    ghostCircle.Filled = false
+    ghostCircle.Transparency = 0.8
 
-    local desyncGhostDot = Drawing.new("Circle")
-    desyncGhostDot.Visible = false
-    desyncGhostDot.Color = Color3.fromRGB(255, 70, 70)
-    desyncGhostDot.Thickness = 1
-    desyncGhostDot.NumSides = 16
-    desyncGhostDot.Radius = 4
-    desyncGhostDot.Filled = true
-    desyncGhostDot.Transparency = 0.9
+    local ghostDot = Drawing.new("Circle")
+    ghostDot.Visible = false
+    ghostDot.Color = Color3.fromRGB(255, 70, 70)
+    ghostDot.Thickness = 1
+    ghostDot.NumSides = 16
+    ghostDot.Radius = 4
+    ghostDot.Filled = true
+    ghostDot.Transparency = 0.9
 
-    local function updateGhostIndicator()
-        if not desyncFrozen or not desyncServerCFrame or not desyncSettings.ShowGhost then
-            desyncGhostCircle.Visible = false
-            desyncGhostDot.Visible = false
+    local function hideGhost()
+        ghostCircle.Visible = false
+        ghostDot.Visible = false
+    end
+
+    local function updateGhost()
+        if not frozen or not serverCF or not desyncSettings.ShowGhost then
+            hideGhost()
             return
         end
-
-        local serverPos = desyncServerCFrame.Position
-        local screenPos, onScreen = camera:WorldToViewportPoint(serverPos)
-        if onScreen then
-            local dist = (camera.CFrame.Position - serverPos).Magnitude
-            local radius = math.clamp(800 / dist, 8, 60)
-            desyncGhostCircle.Position = Vector2.new(screenPos.X, screenPos.Y)
-            desyncGhostCircle.Radius = radius
-            desyncGhostCircle.Visible = true
-            desyncGhostDot.Position = Vector2.new(screenPos.X, screenPos.Y)
-            desyncGhostDot.Radius = math.max(radius * 0.15, 2)
-            desyncGhostDot.Visible = true
+        local sp, onS = camera:WorldToViewportPoint(serverCF.Position)
+        if onS then
+            local dist = (camera.CFrame.Position - serverCF.Position).Magnitude
+            local r = math.clamp(800 / dist, 8, 60)
+            ghostCircle.Position = Vector2.new(sp.X, sp.Y)
+            ghostCircle.Radius = r
+            ghostCircle.Visible = true
+            ghostDot.Position = Vector2.new(sp.X, sp.Y)
+            ghostDot.Radius = math.max(r * 0.15, 2)
+            ghostDot.Visible = true
         else
-            desyncGhostCircle.Visible = false
-            desyncGhostDot.Visible = false
+            hideGhost()
         end
     end
 
-    local function desyncFreeze()
-        if desyncFrozen then return end
-        local character = localPlayer.Character
-        if not character then return end
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not rootPart then return end
-
-        desyncServerCFrame = rootPart.CFrame
-        desyncClientCFrame = rootPart.CFrame
-        rootPart.Anchored = true
-        desyncFrozen = true
-        dlog("Desync: Frozen at " .. tostring(rootPart.Position))
+    local function getRootPart()
+        local ch = localPlayer.Character
+        return ch and ch:FindFirstChild("HumanoidRootPart")
     end
 
-    local function desyncResync()
-        if not desyncFrozen then return end
-        local character = localPlayer.Character
-        if not character then
-            desyncFrozen = false
-            desyncServerCFrame = nil
-            desyncClientCFrame = nil
-            return
-        end
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not rootPart then
-            desyncFrozen = false
-            desyncServerCFrame = nil
-            desyncClientCFrame = nil
-            return
-        end
-
-        -- Stay at client position (where the player physically moved to).
-        if desyncClientCFrame then
-            rootPart.CFrame = desyncClientCFrame
-        end
-        rootPart.Anchored = false
-        rootPart.AssemblyLinearVelocity = Vector3.zero
-        rootPart.AssemblyAngularVelocity = Vector3.zero
-
-        desyncFrozen = false
-        desyncServerCFrame = nil
-        desyncClientCFrame = nil
-
-        desyncGhostCircle.Visible = false
-        desyncGhostDot.Visible = false
-        dlog("Desync: Resynced to client position")
+    local function freeze()
+        if frozen then return end
+        local root = getRootPart()
+        if not root then return end
+        serverCF = root.CFrame
+        clientCF = root.CFrame
+        frozen = true
+        dlog("Desync: frozen at " .. tostring(root.Position))
     end
 
-    -- ── Stepped: BEFORE physics ──
-    -- Unanchor and place at client position so physics can process naturally.
-    -- Walking, jumping, gravity, wall collisions all happen during this step.
-    desyncSteppedConn = runService.Stepped:Connect(function()
-        if not desyncFrozen then return end
-        local character = localPlayer.Character
-        if not character then return end
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not rootPart then return end
+    local function resync()
+        if not frozen then return end
+        local root = getRootPart()
+        if root and clientCF then
+            root.CFrame = clientCF
+        end
+        frozen = false
+        serverCF = nil
+        clientCF = nil
+        hideGhost()
+        dlog("Desync: resynced")
+    end
 
-        rootPart.Anchored = false
-        rootPart.CFrame = desyncClientCFrame
-    end)
-
-    -- ── Heartbeat: AFTER physics ──
-    -- Save the physics result (real movement), then anchor at server position.
-    desyncHeartbeatConn = runService.Heartbeat:Connect(function(dt)
+    -- ── Heartbeat (AFTER physics) ──
+    -- Physics just ran → rootPart is at the real client position.
+    -- Save it, then snap to server position so the replicator sends frozen pos.
+    heartbeatConn = runService.Heartbeat:Connect(function(dt)
         if not desyncSettings.Enabled then
-            if desyncFrozen then desyncResync() end
-            updateGhostIndicator()
+            if frozen then resync() end
+            updateGhost()
             return
         end
+
+        -- Determine if we should be frozen this frame.
+        local wantFreeze = false
 
         if desyncSettings.Method == "Hold" then
-            local holding = false
             if Options and Options["DesyncKey"] and type(Options["DesyncKey"].GetState) == "function" then
                 local ok, state = pcall(Options["DesyncKey"].GetState, Options["DesyncKey"])
-                if ok and state then holding = true end
+                if ok and state then wantFreeze = true end
             end
-
-            if holding then
-                local character = localPlayer.Character
-                local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-                if rootPart then
-                    if not desyncFrozen then
-                        desyncFreeze()
-                    else
-                        -- Save where physics moved us (real position with collisions).
-                        desyncClientCFrame = rootPart.CFrame
-                        -- Re-anchor at server (frozen) position for replication.
-                        rootPart.CFrame = desyncServerCFrame
-                        rootPart.Anchored = true
-                        rootPart.AssemblyLinearVelocity = Vector3.zero
-                        rootPart.AssemblyAngularVelocity = Vector3.zero
-                    end
-                end
-            else
-                if desyncFrozen then desyncResync() end
-            end
-
         elseif desyncSettings.Method == "Auto Pulse" then
-            desyncPulseTimer = desyncPulseTimer + dt
-
-            if desyncPulsePhase == "freeze" then
-                local character = localPlayer.Character
-                local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-                if rootPart then
-                    if not desyncFrozen then
-                        desyncFreeze()
-                    else
-                        desyncClientCFrame = rootPart.CFrame
-                        rootPart.CFrame = desyncServerCFrame
-                        rootPart.Anchored = true
-                        rootPart.AssemblyLinearVelocity = Vector3.zero
-                        rootPart.AssemblyAngularVelocity = Vector3.zero
-                    end
+            pulseTimer = pulseTimer + dt
+            if pulsePhase == "freeze" then
+                wantFreeze = true
+                if pulseTimer >= desyncSettings.FreezeDuration then
+                    pulseTimer = 0
+                    pulsePhase = "resync"
+                    wantFreeze = false
                 end
-
-                if desyncPulseTimer >= desyncSettings.FreezeDuration then
-                    desyncPulseTimer = 0
-                    desyncPulsePhase = "resync"
-                    desyncResync()
-                end
-            elseif desyncPulsePhase == "resync" then
-                if desyncPulseTimer >= desyncSettings.ResyncDuration then
-                    desyncPulseTimer = 0
-                    desyncPulsePhase = "freeze"
+            elseif pulsePhase == "resync" then
+                if pulseTimer >= desyncSettings.ResyncDuration then
+                    pulseTimer = 0
+                    pulsePhase = "freeze"
                 end
             end
         end
 
-        updateGhostIndicator()
+        if wantFreeze then
+            local root = getRootPart()
+            if root then
+                if not frozen then
+                    freeze()
+                else
+                    -- Save where physics moved us (this is the real position).
+                    clientCF = root.CFrame
+                    -- Snap to server pos + zero velocity → replicator sends this.
+                    root.CFrame = serverCF
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+        else
+            if frozen then resync() end
+        end
+
+        updateGhost()
     end)
 
-    -- ── RenderStepped: BEFORE rendering ──
-    -- Override to client position so the player sees their real location.
-    desyncRenderConn = runService.RenderStepped:Connect(function()
-        if not desyncFrozen then return end
-        local character = localPlayer.Character
-        if not character then return end
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not rootPart then return end
-
-        rootPart.CFrame = desyncClientCFrame
+    -- ── RenderStepped (BEFORE next frame renders) ──
+    -- The rootPart is currently at server position (placed there by Heartbeat).
+    -- Snap it back to the real client position so the player sees correctly.
+    renderConn = runService.RenderStepped:Connect(function()
+        if not frozen or not clientCF then return end
+        local root = getRootPart()
+        if root then
+            root.CFrame = clientCF
+        end
     end)
 
+    -- UI.
     local DesyncGroup = Tabs.Movement:AddRightGroupbox("Desync")
 
     DesyncGroup:AddToggle("DesyncEnabled", {
@@ -2606,9 +2572,9 @@
         Callback = function(value)
             desyncSettings.Enabled = value
             if not value then
-                desyncResync()
-                desyncPulseTimer = 0
-                desyncPulsePhase = "freeze"
+                resync()
+                pulseTimer = 0
+                pulsePhase = "freeze"
             end
         end,
     }):AddKeyPicker("DesyncKey", {
@@ -2623,9 +2589,9 @@
         Text = "Method",
         Callback = function(value)
             desyncSettings.Method = value
-            desyncPulseTimer = 0
-            desyncPulsePhase = "freeze"
-            if desyncFrozen then desyncResync() end
+            pulseTimer = 0
+            pulsePhase = "freeze"
+            if frozen then resync() end
         end,
     })
 
@@ -2634,10 +2600,7 @@
         Default = true,
         Callback = function(value)
             desyncSettings.ShowGhost = value
-            if not value then
-                desyncGhostCircle.Visible = false
-                desyncGhostDot.Visible = false
-            end
+            if not value then hideGhost() end
         end,
     })
 
@@ -2665,30 +2628,22 @@
         end,
     })
 
-    DesyncGroup:AddLabel("Others see you at the ghost circle")
-    DesyncGroup:AddLabel("On disable you stay at your position")
-    DesyncGroup:AddLabel("Walk, jump, collide normally")
+    DesyncGroup:AddLabel("Server sees your ghost position")
+    DesyncGroup:AddLabel("You move freely on client")
+    DesyncGroup:AddLabel("No anchoring — normal physics")
 
     table.insert(_cleanupFns, function()
-        if desyncSteppedConn then desyncSteppedConn:Disconnect() end
-        if desyncHeartbeatConn then desyncHeartbeatConn:Disconnect() end
-        if desyncRenderConn then desyncRenderConn:Disconnect() end
-        if desyncFrozen then
+        if heartbeatConn then heartbeatConn:Disconnect() end
+        if renderConn then renderConn:Disconnect() end
+        if frozen then
             pcall(function()
-                local character = localPlayer.Character
-                if character then
-                    local rootPart = character:FindFirstChild("HumanoidRootPart")
-                    if rootPart then
-                        if desyncClientCFrame then rootPart.CFrame = desyncClientCFrame end
-                        rootPart.Anchored = false
-                        rootPart.AssemblyLinearVelocity = Vector3.zero
-                        rootPart.AssemblyAngularVelocity = Vector3.zero
-                    end
-                end
+                local root = getRootPart()
+                if root and clientCF then root.CFrame = clientCF end
             end)
         end
-        pcall(function() desyncGhostCircle:Remove() end)
-        pcall(function() desyncGhostDot:Remove() end)
+        frozen = false
+        pcall(function() ghostCircle:Remove() end)
+        pcall(function() ghostDot:Remove() end)
         desyncSettings.Enabled = false
     end)
     end -- Desync
