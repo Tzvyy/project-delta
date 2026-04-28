@@ -2389,21 +2389,18 @@
     end -- Spinbot
 
     -- ============================================================
-    -- DESYNC (Fake Lag) — CFrame velocity-null method
+    -- DESYNC (Fake Lag) — Anchor-cycle with velocity preservation
     -- ============================================================
     --
-    -- How it works:
-    --   The Roblox network replicator sends the HumanoidRootPart's CFrame
-    --   and velocity to the server every ~0.1s (Heartbeat boundary).
-    --   We exploit this by:
-    --     1. Letting the player move normally on the client (walk, jump, etc.)
-    --     2. On Heartbeat (AFTER physics): save real CFrame, then teleport
-    --        the rootPart to the frozen "server" position and zero velocity.
-    --        The replicator picks up this frozen state.
-    --     3. On RenderStepped (BEFORE next frame renders): teleport back to
-    --        the real client position so the player sees where they actually are.
-    --   Result: server sees you standing still, client moves freely.
-    --   No anchoring needed — physics runs normally on client side.
+    -- Frame cycle exploited:
+    --   Stepped  → unanchor + restore client CFrame/velocity → physics runs
+    --   Heartbeat → save post-physics state → anchor at server pos → replicator
+    --              sees anchored part and does NOT send movement to server
+    --   RenderStepped → override visual to client pos so player sees correctly
+    --
+    -- Hits still work because the game's remotes (FireProjectile, etc.) send
+    -- direction/raycast data from the camera, not from character position.
+    -- Melee also uses camera raycasts in this game.
     --
     local desyncSettings
     do
@@ -2416,15 +2413,22 @@
         ShowGhost = true,
     }
 
+    -- Core state.
     local frozen = false
-    local serverCF = nil          -- CFrame the server thinks we're at
-    local clientCF = nil          -- CFrame we're actually at (post-physics)
+    local serverCF = nil          -- Where the server thinks we are (frozen pos)
+    local clientCF = nil          -- Where we actually are (post-physics)
+    local clientLinVel = Vector3.zero
+    local clientAngVel = Vector3.zero
     local pulseTimer = 0
-    local pulsePhase = "freeze"   -- "freeze" or "resync"
+    local pulsePhase = "freeze"
+
+    -- Connections.
+    local steppedConn = nil
     local heartbeatConn = nil
     local renderConn = nil
+    local charAddedConn = nil
 
-    -- Ghost indicator drawings.
+    -- Ghost indicator.
     local ghostCircle = Drawing.new("Circle")
     ghostCircle.Visible = false
     ghostCircle.Color = Color3.fromRGB(255, 70, 70)
@@ -2455,8 +2459,8 @@
         end
         local sp, onS = camera:WorldToViewportPoint(serverCF.Position)
         if onS then
-            local dist = (camera.CFrame.Position - serverCF.Position).Magnitude
-            local r = math.clamp(800 / dist, 8, 60)
+            local d = (camera.CFrame.Position - serverCF.Position).Magnitude
+            local r = math.clamp(800 / d, 8, 60)
             ghostCircle.Position = Vector2.new(sp.X, sp.Y)
             ghostCircle.Radius = r
             ghostCircle.Visible = true
@@ -2468,96 +2472,136 @@
         end
     end
 
-    local function getRootPart()
+    local function getRootAndHum()
         local ch = localPlayer.Character
-        return ch and ch:FindFirstChild("HumanoidRootPart")
+        if not ch then return nil, nil end
+        return ch:FindFirstChild("HumanoidRootPart"), ch:FindFirstChild("Humanoid")
     end
 
-    local function freeze()
+    local function doFreeze()
         if frozen then return end
-        local root = getRootPart()
+        local root = getRootAndHum()
         if not root then return end
         serverCF = root.CFrame
         clientCF = root.CFrame
+        clientLinVel = root.AssemblyLinearVelocity
+        clientAngVel = root.AssemblyAngularVelocity
         frozen = true
         dlog("Desync: frozen at " .. tostring(root.Position))
     end
 
-    local function resync()
+    local function doResync()
         if not frozen then return end
-        local root = getRootPart()
-        if root and clientCF then
-            root.CFrame = clientCF
+        local root = getRootAndHum()
+        if root then
+            root.Anchored = false
+            if clientCF then
+                root.CFrame = clientCF
+                root.AssemblyLinearVelocity = clientLinVel
+                root.AssemblyAngularVelocity = clientAngVel
+            end
         end
         frozen = false
         serverCF = nil
         clientCF = nil
+        clientLinVel = Vector3.zero
+        clientAngVel = Vector3.zero
         hideGhost()
         dlog("Desync: resynced")
     end
 
-    -- ── Heartbeat (AFTER physics) ──
-    -- Physics just ran → rootPart is at the real client position.
-    -- Save it, then snap to server position so the replicator sends frozen pos.
-    heartbeatConn = runService.Heartbeat:Connect(function(dt)
-        if not desyncSettings.Enabled then
-            if frozen then resync() end
-            updateGhost()
-            return
+    -- Reset on respawn.
+    charAddedConn = localPlayer.CharacterAdded:Connect(function()
+        if frozen then
+            frozen = false
+            serverCF = nil
+            clientCF = nil
+            clientLinVel = Vector3.zero
+            clientAngVel = Vector3.zero
+            hideGhost()
         end
+    end)
 
-        -- Determine if we should be frozen this frame.
-        local wantFreeze = false
-
+    -- Determine if we want to be frozen this frame.
+    local function wantFreezeThisFrame(dt)
         if desyncSettings.Method == "Hold" then
             if Options and Options["DesyncKey"] and type(Options["DesyncKey"].GetState) == "function" then
-                local ok, state = pcall(Options["DesyncKey"].GetState, Options["DesyncKey"])
-                if ok and state then wantFreeze = true end
+                local ok, st = pcall(Options["DesyncKey"].GetState, Options["DesyncKey"])
+                if ok and st then return true end
             end
+            return false
         elseif desyncSettings.Method == "Auto Pulse" then
             pulseTimer = pulseTimer + dt
             if pulsePhase == "freeze" then
-                wantFreeze = true
                 if pulseTimer >= desyncSettings.FreezeDuration then
                     pulseTimer = 0
                     pulsePhase = "resync"
-                    wantFreeze = false
+                    return false
                 end
-            elseif pulsePhase == "resync" then
+                return true
+            else -- resync phase
                 if pulseTimer >= desyncSettings.ResyncDuration then
                     pulseTimer = 0
                     pulsePhase = "freeze"
                 end
+                return false
             end
         end
+        return false
+    end
 
-        if wantFreeze then
-            local root = getRootPart()
+    -- ── Phase 1: Stepped (BEFORE physics) ──
+    -- Unanchor and restore real client state so physics can simulate this frame.
+    steppedConn = runService.Stepped:Connect(function()
+        if not frozen then return end
+        local root = getRootAndHum()
+        if not root then return end
+
+        root.Anchored = false
+        root.CFrame = clientCF
+        root.AssemblyLinearVelocity = clientLinVel
+        root.AssemblyAngularVelocity = clientAngVel
+    end)
+
+    -- ── Phase 2: Heartbeat (AFTER physics, BEFORE network replication) ──
+    -- Physics just ran. Save the real result, then anchor at server pos.
+    -- The network replicator sees an anchored part → does NOT send updates.
+    heartbeatConn = runService.Heartbeat:Connect(function(dt)
+        if not desyncSettings.Enabled then
+            if frozen then doResync() end
+            updateGhost()
+            return
+        end
+
+        local want = wantFreezeThisFrame(dt)
+
+        if want then
+            local root = getRootAndHum()
             if root then
                 if not frozen then
-                    freeze()
-                else
-                    -- Save where physics moved us (this is the real position).
-                    clientCF = root.CFrame
-                    -- Snap to server pos + zero velocity → replicator sends this.
-                    root.CFrame = serverCF
-                    root.AssemblyLinearVelocity = Vector3.zero
-                    root.AssemblyAngularVelocity = Vector3.zero
+                    doFreeze()
                 end
+                -- Save post-physics client state.
+                clientCF = root.CFrame
+                clientLinVel = root.AssemblyLinearVelocity
+                clientAngVel = root.AssemblyAngularVelocity
+                -- Anchor at server position → replicator sends nothing.
+                root.Anchored = true
+                root.CFrame = serverCF
             end
         else
-            if frozen then resync() end
+            if frozen then doResync() end
         end
 
         updateGhost()
     end)
 
-    -- ── RenderStepped (BEFORE next frame renders) ──
-    -- The rootPart is currently at server position (placed there by Heartbeat).
-    -- Snap it back to the real client position so the player sees correctly.
+    -- ── Phase 3: RenderStepped (BEFORE frame renders) ──
+    -- The rootPart is anchored at server pos. Override visual to client pos
+    -- so the player sees their real position on screen.
     renderConn = runService.RenderStepped:Connect(function()
         if not frozen or not clientCF then return end
-        local root = getRootPart()
+        local root = getRootAndHum()
         if root then
             root.CFrame = clientCF
         end
@@ -2572,7 +2616,7 @@
         Callback = function(value)
             desyncSettings.Enabled = value
             if not value then
-                resync()
+                doResync()
                 pulseTimer = 0
                 pulsePhase = "freeze"
             end
@@ -2591,7 +2635,7 @@
             desyncSettings.Method = value
             pulseTimer = 0
             pulsePhase = "freeze"
-            if frozen then resync() end
+            if frozen then doResync() end
         end,
     })
 
@@ -2628,17 +2672,26 @@
         end,
     })
 
-    DesyncGroup:AddLabel("Server sees your ghost position")
-    DesyncGroup:AddLabel("You move freely on client")
-    DesyncGroup:AddLabel("No anchoring — normal physics")
+    DesyncGroup:AddLabel("Server pos frozen, client moves freely")
+    DesyncGroup:AddLabel("Hits still register from client pos")
+    DesyncGroup:AddLabel("Ghost circle = where server sees you")
 
     table.insert(_cleanupFns, function()
+        if steppedConn then steppedConn:Disconnect() end
         if heartbeatConn then heartbeatConn:Disconnect() end
         if renderConn then renderConn:Disconnect() end
+        if charAddedConn then charAddedConn:Disconnect() end
         if frozen then
             pcall(function()
-                local root = getRootPart()
-                if root and clientCF then root.CFrame = clientCF end
+                local root = getRootAndHum()
+                if root then
+                    root.Anchored = false
+                    if clientCF then
+                        root.CFrame = clientCF
+                        root.AssemblyLinearVelocity = clientLinVel
+                        root.AssemblyAngularVelocity = clientAngVel
+                    end
+                end
             end)
         end
         frozen = false
